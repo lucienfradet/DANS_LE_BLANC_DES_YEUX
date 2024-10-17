@@ -1,12 +1,14 @@
-#OCT 9th, 2024
-from flask import Flask, render_template, Response
+# OCT 9th, 2024
+from flask import Flask, render_template, Response, request
 from flask_cors import CORS
 import cv2
 import mediapipe as mp
 import numpy as np
 import time
+import threading
+import requests
 
-#Help from this tutorial: https://www.youtube.com/watch?v=NAYb8SKUNyI
+# Help from this tutorial: https://www.youtube.com/watch?v=NAYb8SKUNyI
 
 app = Flask(__name__)
 CORS(app)
@@ -63,6 +65,29 @@ def generate_frames():
 
     cap.release()
 
+def stream_video_to_other_pi():
+    cap = cv2.VideoCapture(0)  # Access the webcam
+    while True:
+        ret, frame = cap.read()
+        if ret:
+            # Compress frame
+            _, buffer = cv2.imencode('.jpg', frame)
+            try:
+                requests.post('https://other-pi-domain.com/video', data=buffer.tobytes(), verify=False)
+            except Exception as e:
+                print(f"Error sending video: {e}")
+    cap.relaease()
+
+@app.route('/video', methods=['POST'])
+def receive_video():
+    video_data = request.data
+    nparr = np.frombuffer(video_data, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if frame is not None:
+        cv2.imshow('Received Video', frame)
+        cv2.waitKey(1)
+    return "OK", 200
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -72,4 +97,9 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Start the thread for streaming video to the other Raspberry Pi
+    video_thread = threading.Thread(target=stream_video_to_other_pi, daemon=True)
+    video_thread.start()
+    
+    # Run the Flask app
+    app.run(host='0.0.0.0', port=5000, ssl_context=('cert.pem', 'key.pem'), debug=True)
