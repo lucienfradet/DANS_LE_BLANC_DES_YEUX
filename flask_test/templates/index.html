@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webcam Feed with Background Removal</title>
+</head>
+
+<body>
+    <h1>Webcam Feed with Background Removal</h1>
+    <img id="webcam-feed" src="{{ url_for('video_feed') }}" style="width: 640px; height: 480px;" alt="Webcam feed">
+
+    <script>
+        // No need for getUserMedia in this version as Flask serves the video feed
+    </script>
+</body>
+
+</html>
