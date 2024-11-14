@@ -1,94 +1,92 @@
-#include <Arduino.h>
 #line 1 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/send_gyro/send_gyro.ino"
 #include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Arduino.h>
+#include <Adafruit_HMC5883_U.h>
 
-const int MPU_addr = 0x68;
-int16_t AcX, AcY, AcZ;
-int minVal = 265;
-int maxVal = 402;
+Adafruit_MPU6050 mpu;
+Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
 
-double x, y, z;
 double xOffset = 0, yOffset = 0, zOffset = 0;
+double magZOffset = 0;
 
-#line 11 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/send_gyro/send_gyro.ino"
+#line 13 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/send_gyro/send_gyro.ino"
 void setup();
-#line 57 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/send_gyro/send_gyro.ino"
+#line 61 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/send_gyro/send_gyro.ino"
 void loop();
-#line 11 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/send_gyro/send_gyro.ino"
+#line 13 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/send_gyro/send_gyro.ino"
 void setup() {
-  Wire.begin();
-  Wire.beginTransmission(MPU_addr);
-  Wire.write(0x6B);  
-  Wire.write(0);      
-  Wire.endTransmission(true);
   Serial.begin(9600);
-
-  // Calibration phase
-  Serial.println("Calibrating...");
-  delay(1000);  // Give some time for MPU6050 to stabilize
-
-  const int calibrationSamples = 100;
-  long sumX = 0, sumY = 0, sumZ = 0;
   
-  // Take multiple readings to calculate the average offsets
-  for (int i = 0; i < calibrationSamples; i++) {
-    Wire.beginTransmission(MPU_addr);
-    Wire.write(0x3B);
-    Wire.endTransmission(false);
-    Wire.requestFrom(MPU_addr, 6, true);
-    AcX = Wire.read() << 8 | Wire.read();
-    AcY = Wire.read() << 8 | Wire.read();
-    AcZ = Wire.read() << 8 | Wire.read();
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1) {
+      delay(10);
+    }
+  }
+  
+  mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+  mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 
-    // Calculate initial angles
-    int xAng = map(AcX, minVal, maxVal, -90, 90);
-    int yAng = map(AcY, minVal, maxVal, -90, 90);
-    int zAng = map(AcZ, minVal, maxVal, -90, 90);
-
-    // Store the initial orientation angles as offsets
-    xOffset += RAD_TO_DEG * (atan2(-yAng, -zAng) + PI);
-    yOffset += RAD_TO_DEG * (atan2(-xAng, -zAng) + PI);
-    zOffset += RAD_TO_DEG * (atan2(-yAng, -xAng) + PI);
-
-    delay(10);  // Small delay for consistent readings
+  // Initialize HMC5883L
+  if (!mag.begin()) {
+    Serial.println("Failed to find HMC5883L chip");
+    while (1) {
+      delay(10);
+    }
   }
 
-  // Average out the offsets over the calibration samples
-  xOffset /= calibrationSamples;
-  yOffset /= calibrationSamples;
-  zOffset /= calibrationSamples;
+  // Calibration phase
+  delay(1000); // Allow MPU to stabilize
 
-  Serial.println("Calibration complete");
+  const int calibrationSamples = 100;
+  sensors_event_t accel, magEvent;
+  long sumX = 0, sumY = 0, sumZ = 0, sumMagZ = 0;
+
+  for (int i = 0; i < calibrationSamples; i++) {
+    mpu.getAccelerometerSensor()->getEvent(&accel);
+    mag.getEvent(&magEvent);
+
+    sumX += accel.acceleration.x;
+    sumY += accel.acceleration.y;
+    sumZ += accel.acceleration.z;
+    sumMagZ += magEvent.magnetic.z;
+
+    delay(10); // Allow consistent readings
+  }
+
+  // Store the average values as offsets
+  xOffset = sumX / (float)calibrationSamples;
+  yOffset = sumY / (float)calibrationSamples;
+  zOffset = sumZ / (float)calibrationSamples;
+  magZOffset = sumMagZ / (float)calibrationSamples;
 }
 
 void loop() {
-  Wire.beginTransmission(MPU_addr);
-  Wire.write(0x3B);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU_addr, 14, true);
+  sensors_event_t accel, magEvent;
+  mpu.getAccelerometerSensor()->getEvent(&accel);
+  mag.getEvent(&magEvent);
 
-  AcX = Wire.read() << 8 | Wire.read();
-  AcY = Wire.read() << 8 | Wire.read();
-  AcZ = Wire.read() << 8 | Wire.read();
+  // Subtract offsets to calculate adjusted angles
+  double adjustedX = accel.acceleration.x - xOffset;
+  double adjustedY = accel.acceleration.y - yOffset;
+  double adjustedZ = accel.acceleration.z - zOffset;
 
-  // Calculate angles based on accelerometer data
-  int xAng = map(AcX, minVal, maxVal, -90, 90);
-  int yAng = map(AcY, minVal, maxVal, -90, 90);
-  int zAng = map(AcZ, minVal, maxVal, -90, 90);
+  double xAngle = atan2(adjustedY, adjustedZ) * RAD_TO_DEG;
+  double yAngle = atan2(adjustedX, adjustedZ) * RAD_TO_DEG;
 
-  // Calculate orientation angles, subtracting the offsets to zero out the initial position
-  x = RAD_TO_DEG * (atan2(-yAng, -zAng) + PI) - xOffset;
-  y = RAD_TO_DEG * (atan2(-xAng, -zAng) + PI) - yOffset;
-  z = RAD_TO_DEG * (atan2(-yAng, -xAng) + PI) - zOffset;
+  // Calculate Z-axis angle using only the HMC5883L X and Y data
+  double zAngle = atan2(magEvent.magnetic.y, magEvent.magnetic.x) * RAD_TO_DEG;
 
-  // Print the calculated angles (with the initial position now at 0, 0, 0)
-  Serial.print("X= ");
-  Serial.print(x);
-  Serial.print(", Y= ");
-  Serial.print(y);
-  Serial.print(", Z= ");
-  Serial.println(z);
+  // Print angles
+  Serial.print(xAngle);
+  Serial.print(",");
+  Serial.print(yAngle);
+  Serial.print(",");
+  Serial.println(zAngle);
 
-  delay(50);  // Adjust delay as needed
+  delay(100); // Adjust as needed
 }
 
