@@ -1,4 +1,4 @@
-/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/libraries/AccelStepper/MultiStepper.cpp.o: \
+/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/libraries/AccelStepper/MultiStepper.cpp.o: \
  /home/lucienfradet/Arduino/libraries/AccelStepper/src/MultiStepper.cpp \
  /home/lucienfradet/Arduino/libraries/AccelStepper/src/MultiStepper.h \
  /home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/cores/arduino/Arduino.h \

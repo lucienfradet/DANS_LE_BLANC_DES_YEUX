@@ -13,6 +13,12 @@ def gyro_handler(address, *args):
 
     # Print the values to the console
     print(gyro_data)
+    
+    if arduino_serial.in_waiting > 0:
+        # Read the incoming data from the serial port
+        data = arduino_serial.readline().decode().strip()
+        # Print the data to the console
+        print(f"Received data: {data}")
 
     # Send the formatted data over serial to the Arduino
     arduino_serial.write((gyro_data + "\n").encode())

@@ -1,6 +1,6 @@
 [
  {
-  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro",
+  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1",
   "arguments": [
    "/home/lucienfradet/.arduino15/packages/arduino/tools/avr-gcc/7.3.0-atmel3.6.1-arduino7/bin/avr-g++",
    "-c",
@@ -25,14 +25,14 @@
    "-I/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/variants/standard",
    "-I/home/lucienfradet/Arduino/libraries/AccelStepper/src",
    "-I/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src",
-   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/sketch/control_with_gyro.ino.cpp",
+   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/sketch/on_device_arduino_1.ino.cpp",
    "-o",
-   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/sketch/control_with_gyro.ino.cpp.o"
+   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/sketch/on_device_arduino_1.ino.cpp.o"
   ],
-  "file": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/sketch/control_with_gyro.ino.cpp"
+  "file": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/sketch/on_device_arduino_1.ino.cpp"
  },
  {
-  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro",
+  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1",
   "arguments": [
    "/home/lucienfradet/.arduino15/packages/arduino/tools/avr-gcc/7.3.0-atmel3.6.1-arduino7/bin/avr-g++",
    "-c",
@@ -59,12 +59,12 @@
    "-I/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src",
    "/home/lucienfradet/Arduino/libraries/AccelStepper/src/AccelStepper.cpp",
    "-o",
-   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/libraries/AccelStepper/AccelStepper.cpp.o"
+   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/libraries/AccelStepper/AccelStepper.cpp.o"
   ],
   "file": "/home/lucienfradet/Arduino/libraries/AccelStepper/src/AccelStepper.cpp"
  },
  {
-  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro",
+  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1",
   "arguments": [
    "/home/lucienfradet/.arduino15/packages/arduino/tools/avr-gcc/7.3.0-atmel3.6.1-arduino7/bin/avr-g++",
    "-c",
@@ -91,12 +91,12 @@
    "-I/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src",
    "/home/lucienfradet/Arduino/libraries/AccelStepper/src/MultiStepper.cpp",
    "-o",
-   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/libraries/AccelStepper/MultiStepper.cpp.o"
+   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/libraries/AccelStepper/MultiStepper.cpp.o"
   ],
   "file": "/home/lucienfradet/Arduino/libraries/AccelStepper/src/MultiStepper.cpp"
  },
  {
-  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro",
+  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1",
   "arguments": [
    "/home/lucienfradet/.arduino15/packages/arduino/tools/avr-gcc/7.3.0-atmel3.6.1-arduino7/bin/avr-g++",
    "-c",
@@ -123,12 +123,12 @@
    "-I/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src",
    "/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src/Wire.cpp",
    "-o",
-   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/libraries/Wire/Wire.cpp.o"
+   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/libraries/Wire/Wire.cpp.o"
   ],
   "file": "/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src/Wire.cpp"
  },
  {
-  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro",
+  "directory": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1",
   "arguments": [
    "/home/lucienfradet/.arduino15/packages/arduino/tools/avr-gcc/7.3.0-atmel3.6.1-arduino7/bin/avr-gcc",
    "-c",
@@ -152,7 +152,7 @@
    "-I/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src",
    "/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src/utility/twi.c",
    "-o",
-   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/libraries/Wire/utility/twi.c.o"
+   "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/libraries/Wire/utility/twi.c.o"
   ],
   "file": "/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src/utility/twi.c"
  }

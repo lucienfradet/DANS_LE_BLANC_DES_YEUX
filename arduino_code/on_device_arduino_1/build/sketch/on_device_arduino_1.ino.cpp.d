@@ -1,5 +1,5 @@
-/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/sketch/control_with_gyro.ino.cpp.o: \
- /home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/control_with_gyro/build/sketch/control_with_gyro.ino.cpp \
+/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/sketch/on_device_arduino_1.ino.cpp.o: \
+ /home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/build/sketch/on_device_arduino_1.ino.cpp \
  /home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/cores/arduino/Arduino.h \
  /home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/cores/arduino/binary.h \
  /home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/cores/arduino/WCharacter.h \

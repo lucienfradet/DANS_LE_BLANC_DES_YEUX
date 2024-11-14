@@ -136,6 +136,7 @@ void loop() {
         // = 0.48sec
         // gx = gx * 0.96 + ax * 0.04;
         // gy = gy * 0.96 + ay * 0.04;
+        Serial.println(gz);
         
         float zDelta = 0;
         if (zValue > 0 && gz > 0 || zValue < 0 && gz < 0) {
@@ -147,14 +148,16 @@ void loop() {
             zDelta *= -1;
           }
         }
-        positions[0] = (abs(zValue) - abs(gz)) * 200 / 360;  // z for yaw
-        yValue = constrain(yValue, -45, 45);     // Clamp yValue to -45 to 45
-        positions[1] = yValue;  // y for tilt
+
+        if (zDelta > 10) {
+          positions[0] = zDelta * 200 / 360;  // z for yaw
+          yValue = constrain(yValue, -45, 45);     // Clamp yValue to -45 to 45
+          positions[1] = yValue;  // y for tilt
 
 
-        steppers.moveTo(positions);
-        steppers.runSpeedToPosition(); // Blocks until all steppers are in position
-
+          steppers.moveTo(positions);
+          steppers.runSpeedToPosition(); // Blocks until all steppers are in position
+        }
 
         end_time = millis();
 
@@ -187,14 +190,6 @@ void calibrate(){
   gyrXoffs = xSum / num;
   gyrYoffs = ySum / num;
   gyrZoffs = zSum / num;
-
-//  Serial.println("Calibration result:");
-//  Serial.print(gyrXoffs);
-//  Serial.print(", ");
-//  Serial.print(gyrYoffs);
-//  Serial.print(", ");
-//  Serial.println(gyrZoffs);
-  
 } 
 
 void read_sensor_data(){
