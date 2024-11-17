@@ -1,3 +1,4 @@
+#include "Arduino.h"
 #include <AccelStepper.h>
 #include <MultiStepper.h>
 #include <Wire.h>
@@ -68,11 +69,11 @@ void setup() {
   digitalWrite(13, LOW);
 
   // Configure stepper parameters
-  stepperTilt.setMaxSpeed(100);
-  stepperTilt.setAcceleration(100);
+  stepperTilt.setMaxSpeed(500.0);
+  stepperTilt.setAcceleration(500.0);
 
-  stepperYaw.setMaxSpeed(1000);
-  stepperYaw.setAcceleration(100);
+  stepperYaw.setMaxSpeed(1000.0);
+  stepperYaw.setAcceleration(600.0);
 
   // Add steppers to MultiStepper manager
   steppers.addStepper(stepperYaw);
@@ -101,13 +102,18 @@ void loop() {
       // Move steppers to new positions based on y and z values
       long positions[2];
       //deg * 200 steps full rotation / 360 degs
-      positions[0] = zValue * 200 / 360;  // z for yaw
-      yValue = constrain(yValue, -45, 45);     // Clamp yValue to -45 to 45
+      positions[0] = zValue * 200 * 4 / 360;  // z for yaw
+      yValue = constrain(yValue, -60, 60);     // Clamp yValue to -45 to 45
       positions[1] = yValue;  // y for tilt
 
 
-      steppers.moveTo(positions);
-      steppers.runSpeedToPosition(); // Blocks until all steppers are in position
+      stepperYaw.moveTo(positions[0]);
+      stepperTilt.moveTo(positions[1]);
+      stepperYaw.run();
+      stepperTilt.run();
+
+      // steppers.moveTo(positions);
+      // steppers.runSpeedToPosition(); // Blocks until all steppers are in position
 
       unsigned long currentTime = millis();
       // Check MPU every 2 seconds
@@ -155,8 +161,8 @@ void loop() {
           positions[1] = yValue;  // y for tilt
 
 
-          steppers.moveTo(positions);
-          steppers.runSpeedToPosition(); // Blocks until all steppers are in position
+          // steppers.moveTo(positions);
+          // steppers.runSpeedToPosition(); // Blocks until all steppers are in position
         }
 
         end_time = millis();
