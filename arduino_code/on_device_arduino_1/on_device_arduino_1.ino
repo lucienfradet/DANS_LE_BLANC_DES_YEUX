@@ -1,13 +1,11 @@
-<<<<<<< HEAD
 #define PRESSURE_SENSOR_PIN A0
 #define MOTOR_ENABLE_PIN 8    // Pin controlling motor enable (adjust as needed)
-=======
+
 #include "Arduino.h"
 #include <AccelStepper.h>
 #include <MultiStepper.h>
 #include <Wire.h>
 #include <math.h>
->>>>>>> 27355b31b8775f45003136a5c5a0ccab2660d983
 
 const int threshold = 250;
 
