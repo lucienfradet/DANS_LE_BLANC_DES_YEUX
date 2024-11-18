@@ -1,5 +1,5 @@
-#include <Arduino.h>
 #line 1 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#include "Arduino.h"
 #include <AccelStepper.h>
 #include <MultiStepper.h>
 #include <Wire.h>
@@ -33,21 +33,21 @@ int16_t accX = 0, accY = 0, accZ = 0;
 
 double gyrXoffs = -281.00, gyrYoffs = 18.00, gyrZoffs = -83.00;
 
-#line 34 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#line 35 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
 void setup();
-#line 85 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#line 86 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
 void loop();
-#line 172 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#line 178 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
 void calibrate();
-#line 195 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#line 201 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
 void read_sensor_data();
-#line 216 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#line 222 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
 int i2c_read(int addr, int start, uint8_t *buffer, int size);
-#line 243 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#line 249 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
 int i2c_write(int addr, int start, const uint8_t *pData, int size);
-#line 264 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#line 270 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
 int i2c_write_reg(int addr, int reg, uint8_t data);
-#line 34 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
+#line 35 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/on_device_arduino_1/on_device_arduino_1.ino"
 void setup() {  
   Serial.begin(9600);
 
@@ -85,11 +85,11 @@ void setup() {
   digitalWrite(13, LOW);
 
   // Configure stepper parameters
-  stepperTilt.setMaxSpeed(100);
-  stepperTilt.setAcceleration(100);
+  stepperTilt.setMaxSpeed(500.0);
+  stepperTilt.setAcceleration(500.0);
 
-  stepperYaw.setMaxSpeed(1000);
-  stepperYaw.setAcceleration(100);
+  stepperYaw.setMaxSpeed(1000.0);
+  stepperYaw.setAcceleration(600.0);
 
   // Add steppers to MultiStepper manager
   steppers.addStepper(stepperYaw);
@@ -118,13 +118,18 @@ void loop() {
       // Move steppers to new positions based on y and z values
       long positions[2];
       //deg * 200 steps full rotation / 360 degs
-      positions[0] = zValue * 200 / 360;  // z for yaw
-      yValue = constrain(yValue, -45, 45);     // Clamp yValue to -45 to 45
+      positions[0] = zValue * 200 * 4 / 360;  // z for yaw
+      yValue = constrain(yValue, -60, 60);     // Clamp yValue to -45 to 45
       positions[1] = yValue;  // y for tilt
 
 
-      steppers.moveTo(positions);
-      steppers.runSpeedToPosition(); // Blocks until all steppers are in position
+      stepperYaw.moveTo(positions[0]);
+      stepperTilt.moveTo(positions[1]);
+      stepperYaw.run();
+      stepperTilt.run();
+
+      // steppers.moveTo(positions);
+      // steppers.runSpeedToPosition(); // Blocks until all steppers are in position
 
       unsigned long currentTime = millis();
       // Check MPU every 2 seconds
@@ -172,8 +177,8 @@ void loop() {
           positions[1] = yValue;  // y for tilt
 
 
-          steppers.moveTo(positions);
-          steppers.runSpeedToPosition(); // Blocks until all steppers are in position
+          // steppers.moveTo(positions);
+          // steppers.runSpeedToPosition(); // Blocks until all steppers are in position
         }
 
         end_time = millis();
