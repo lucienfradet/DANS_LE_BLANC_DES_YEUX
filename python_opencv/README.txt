@@ -1,5 +1,13 @@
+install dependencies for pyaudio:
+sudo apt install portaudio19-dev python3-dev
+
+install requirements with:
+pip install -r requirements.txt
+
+Or manually with:
 pip install opencv-python opencv-python-headless pygame pyaudio numpy
-to run
+
+to run:
 python script.py <Device_2_IP> <Port>
 python script.py <Device_B_IP> 5000 6000 <- its this one
 
