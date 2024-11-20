@@ -5,7 +5,7 @@ def chroma_key(frame, lower_bound, upper_bound):
     # Convert the frame to HSV color space
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Create a mask for dark colors within the specified range
+    # Create a mask for colors within the specified range
     mask = cv2.inRange(hsv, lower_bound, upper_bound)
     
     # Apply the mask to turn black areas white
@@ -24,40 +24,20 @@ def add_dithering_effect(frame, pixel_size=10):
     
     return pixelated_frame
 
-# Callback function for trackbars (does nothing but is required by OpenCV)
-def nothing(x):
-    pass
-
 # Initialize webcam
 cap = cv2.VideoCapture(0)
 
-# Create a window with trackbars to adjust HSV range
-cv2.namedWindow('Chroma Keyed Video')
-cv2.createTrackbar('Lower Hue Threshold', 'Chroma Keyed Video', 0, 180, nothing)
-cv2.createTrackbar('Upper Hue Threshold', 'Chroma Keyed Video', 180, 180, nothing)
-cv2.createTrackbar('Lower Saturation Threshold', 'Chroma Keyed Video', 0, 255, nothing)
-cv2.createTrackbar('Upper Saturation Threshold', 'Chroma Keyed Video', 255, 255, nothing)
-cv2.createTrackbar('Lower Brightness Threshold', 'Chroma Keyed Video', 0, 255, nothing)
-cv2.createTrackbar('Upper Brightness Threshold', 'Chroma Keyed Video', 115, 255, nothing)  # Start at 115 for your setup
+# Hardcoded HSV thresholds
+lower_black = np.array([0, 0, 0])       # Lower bound for dark areas
+upper_black = np.array([180, 255, 120]) # Upper bound for dark areas
 
+# Main loop
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
 
-    # Get current positions of trackbars
-    lower_h = cv2.getTrackbarPos('Lower Hue Threshold', 'Chroma Keyed Video')
-    upper_h = cv2.getTrackbarPos('Upper Hue Threshold', 'Chroma Keyed Video')
-    lower_s = cv2.getTrackbarPos('Lower Saturation Threshold', 'Chroma Keyed Video')
-    upper_s = cv2.getTrackbarPos('Upper Saturation Threshold', 'Chroma Keyed Video')
-    lower_v = cv2.getTrackbarPos('Lower Brightness Threshold', 'Chroma Keyed Video')
-    upper_v = cv2.getTrackbarPos('Upper Brightness Threshold', 'Chroma Keyed Video')
-
-    # Set HSV range based on slider positions
-    lower_black = np.array([lower_h, lower_s, lower_v])
-    upper_black = np.array([upper_h, upper_s, upper_v])
-
-    # Apply chroma keying with adjusted values
+    # Apply chroma keying with hardcoded values
     chroma_frame = chroma_key(frame, lower_black, upper_black)
 
     # Add dithering/pixelation effect
