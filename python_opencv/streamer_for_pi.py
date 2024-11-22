@@ -1,5 +1,6 @@
 import socket
 import cv2
+from picamera2 import Picamera2
 import pyaudio
 import threading
 import numpy as np
@@ -55,41 +56,44 @@ sock_float_array.bind(("0.0.0.0", FLOAT_ARRAY_PORT))
 # Audio setup
 audio = pyaudio.PyAudio()
 
-# Function to initialize all cameras
 def initialize_cameras():
     global video_capture_indices
+    video_capture_indices = []
     for i in range(2):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            print("openned video capture: " + str(i))
-            video_capture_indices.append(cap)
+        picam2 = Picamera2(camera_num=i)
+        # Configure the camera (adjust resolution and format as needed)
+        picam2.configure(picam2.create_preview_configuration(main={"size": (1920, 1080)}))
+        picam2.start()
+        video_capture_indices.append(picam2)
 
 # Function to capture and send front camera stream
 #REWORKED this now sends camera stream based on overlay status values
 def get_front_camera_stream():
     global video_capture_indices, current_camera_index, overlay_status, remote_overlay_status
     while True:
-            #check for eyes
-            newEyeDetection()
+        # Check for eyes
+        newEyeDetection()
 
-            if overlay_status and remote_overlay_status:
-                current_camera_index = 1
-            else:
-                current_camera_index = 0
-            
-            cap = video_capture_indices[current_camera_index]
-            ret, frame = cap.read()
-            if not ret:
-                continue
+        if overlay_status and remote_overlay_status:
+            current_camera_index = 1
+        else:
+            current_camera_index = 0
 
-            # Resize the frame to a smaller resolution (e.g., 320x180)
-            frame_resized = cv2.resize(frame, (320, 180))
+        cap = video_capture_indices[current_camera_index]
+        frame = cap.capture_array()
+        if frame is None:
+            continue
+        # Convert from RGB to BGR
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-            # Increase JPEG compression by reducing the quality to 30
-            _, buffer = cv2.imencode('.jpg', frame_resized, [int(cv2.IMWRITE_JPEG_QUALITY), 30])
+        # Resize the frame to a smaller resolution (e.g., 320x180)
+        frame_resized = cv2.resize(frame, (320, 180))
 
-            if len(buffer) < BUFFER_SIZE:
-                sock_video_front.sendto(buffer, (TARGET_IP, VIDEO_PORT_FRONT))
+        # Increase JPEG compression by reducing the quality to 30
+        _, buffer = cv2.imencode('.jpg', frame_resized, [int(cv2.IMWRITE_JPEG_QUALITY), 30])
+
+        if len(buffer) < BUFFER_SIZE:
+            sock_video_front.sendto(buffer, (TARGET_IP, VIDEO_PORT_FRONT))
 
 # Function to receive and display the camera streams
 def receive_camera_stream():
@@ -243,11 +247,13 @@ def receive_float_array():
 
 def newEyeDetection():
     global video_capture_indices, framesWithEyes, framesWithEyesLimit
-    cam = video_capture_indices[(1) % len(video_capture_indices)]
-    #print("running newEyeDetection")
-    #cam = eyeCheckCam
-    _, frame = cam.read()
-    resized = cv2.resize(frame, (1280, 720)) #might want to rescale to 1920 x 1080 for our 1080p cameras
+    cam = video_capture_indices[1 % len(video_capture_indices)]
+    frame = cam.capture_array()
+    if frame is None:
+        return
+    # Convert from RGB to BGR
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    resized = cv2.resize(frame, (1280, 720))  # Adjust resolution as needed
     grayscale = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(grayscale, (5, 5), 0)
     eyes = face_cascade.detectMultiScale(blur, 1.2, 6)
@@ -256,7 +262,6 @@ def newEyeDetection():
         set_overlay(True)
         framesWithEyes = 0
     else:
-        #print("NO EYES!")
         framesWithEyes += 1
         if framesWithEyes >= framesWithEyesLimit:
             set_overlay(False)

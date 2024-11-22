@@ -1,11 +1,11 @@
 install dependencies for pyaudio:
-sudo apt install portaudio19-dev python3-dev
+sudo apt install portaudio19-dev python3-dev libcap-dev
 
 install requirements with:
 pip install -r requirements.txt
 
 Or manually with:
-pip install opencv-python opencv-python-headless pygame pyaudio numpy
+pip install opencv-python opencv-python-headless pygame pyaudio numpy picamera2
 
 to run:
 python script.py <Device_2_IP> <Port>
