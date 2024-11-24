@@ -1,3 +1,4 @@
+#line 1 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/StepperMotors_GyroControl_moveTo_withENA/StepperMotors_GyroControl_moveTo_withENA.ino"
 #include "Arduino.h"
 #include <Wire.h>
 #include <math.h>
@@ -42,6 +43,19 @@ const double steps_per_degree = steps_per_rev / 360.0; // Steps per degree
 // Threshold for movement detection (in degrees)
 const double movementThreshold = 3.0; // Ignore movements smaller than this
 
+#line 45 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/StepperMotors_GyroControl_moveTo_withENA/StepperMotors_GyroControl_moveTo_withENA.ino"
+void setup();
+#line 79 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/StepperMotors_GyroControl_moveTo_withENA/StepperMotors_GyroControl_moveTo_withENA.ino"
+void loop();
+#line 169 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/StepperMotors_GyroControl_moveTo_withENA/StepperMotors_GyroControl_moveTo_withENA.ino"
+void calibrate();
+#line 188 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/StepperMotors_GyroControl_moveTo_withENA/StepperMotors_GyroControl_moveTo_withENA.ino"
+void read_sensor_data();
+#line 202 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/StepperMotors_GyroControl_moveTo_withENA/StepperMotors_GyroControl_moveTo_withENA.ino"
+int i2c_read(int addr, int reg, uint8_t *data, int length);
+#line 216 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/StepperMotors_GyroControl_moveTo_withENA/StepperMotors_GyroControl_moveTo_withENA.ino"
+int i2c_write_reg(int addr, int reg, uint8_t data);
+#line 45 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/StepperMotors_GyroControl_moveTo_withENA/StepperMotors_GyroControl_moveTo_withENA.ino"
 void setup() {
   Serial.begin(9600);
 
@@ -219,3 +233,4 @@ int i2c_write_reg(int addr, int reg, uint8_t data) {
   Wire.write(data);
   return Wire.endTransmission();
 }
+

@@ -10,12 +10,12 @@
     "Includepath": "/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/variants/standard"
   },
   {
-    "Sourcefile": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/mpu_test_2/build/sketch/mpu_test_2.ino.cpp",
+    "Sourcefile": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/mpu_tester/build/sketch/mpu_tester.ino.cpp",
     "Include": "Wire.h",
     "Includepath": "/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/libraries/Wire/src"
   },
   {
-    "Sourcefile": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/mpu_test_2/build/sketch/mpu_test_2.ino.cpp",
+    "Sourcefile": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/mpu_tester/build/sketch/mpu_tester.ino.cpp",
     "Include": "",
     "Includepath": null
   },
