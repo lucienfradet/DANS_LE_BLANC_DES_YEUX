@@ -5,5 +5,5 @@
   "fqbn": "arduino:avr:uno",
   "hardwareFolders": "/home/lucienfradet/.arduino15/packages",
   "otherLibrariesFolders": "/home/lucienfradet/Arduino/libraries",
-  "sketchLocation": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code_tests/mpu_test_2"
+  "sketchLocation": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/mpu_tester"
 }
