@@ -94,7 +94,7 @@ def read_and_send_serial():
                     print("no response from arduino.")
                     continue
                 
-                print(f"Raw line from Arduino: {line}")
+                # print(f"Raw line from Arduino: {line}")
                 data = parse_serial_line(line)  # Parse the received line
 
                 if data:  # Process only if valid data is parsed
@@ -104,6 +104,8 @@ def read_and_send_serial():
                     update_local_osc(data)
 
                     # Send parsed data via OSC
+                    print("sending data over OSC")
+                    print(data)
                     osc_client.send_message("/data", data)
         except Exception as e:
             print(f"Error in read_and_send_serial: {e}")
@@ -111,6 +113,7 @@ def read_and_send_serial():
 
 # OSC handler function
 def handle_osc_data(unused_addr, y, z, pressure):
+    print("handle_osc_data called")
     received_osc_temp = {"y": y, "z": z, "pressure": pressure}
     update_recieved_osc(received_osc_temp)
     print(f"Received from OSC: {received_osc}")
