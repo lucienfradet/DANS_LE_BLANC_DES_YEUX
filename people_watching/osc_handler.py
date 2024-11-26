@@ -6,7 +6,6 @@ This file does:
 - send the MPU (gyro) data of the other device to the arduino
 """
 
-from people_watching import motor
 import serial
 import socket
 import threading
