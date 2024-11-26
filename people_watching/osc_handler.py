@@ -14,7 +14,7 @@ from pythonosc.udp_client import SimpleUDPClient
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 
-from shared_variables import config, local_osc, received_osc
+from shared_variables import config, local_osc, received_osc, update_local_osc, update_recieved_osc
 from motor import MotorController
 
 # Hardcoded configuration values
@@ -40,8 +40,8 @@ arduino_serial = init_serial_connection(ARDUINO_SERIAL_PORT, ARDUINO_BAUDRATE)
 
 # OSC client and object storage
 osc_client = None
-received_osc = {"y": 0, "z": 0, "pressure": False}
-local_osc = {"y": 0, "z": 0, "pressure": False}
+# received_osc = {"y": 0, "z": 0, "pressure": False}
+# local_osc = {"y": 0, "z": 0, "pressure": False}
 
 # Initialize OSC client with retry logic
 def init_osc_client(ip, port):
@@ -67,7 +67,7 @@ def parse_serial_line(line):
             if key in ["y", "z"]:
                 parsed[key] = int(value)
             elif key == "pressure":
-                parsed[key] = value.lower() == "true"
+                parsed[key] = value == "1"
         return parsed
     except Exception as e:
         print(f"Error parsing line: {line}, Returning None!\n Error: {e}")
@@ -85,7 +85,8 @@ def read_and_send_serial():
                 line = arduino_serial.readline().decode().strip()
                 # print(f"Received from Arduino: {line}")
                 data = parse_serial_line(line)
-                local_osc = data
+                # update local_osc
+                update_local_osc(data)
                 if data:
                     # Send parsed data via OSC
                     osc_client.send_message("/data", data)
@@ -95,8 +96,8 @@ def read_and_send_serial():
 
 # OSC handler function
 def handle_osc_data(unused_addr, y, z, pressure):
-    global received_osc
-    received_osc = {"y": y, "z": z, "pressure": pressure}
+    received_osc_temp = {"y": y, "z": z, "pressure": pressure}
+    update_recieved_osc(received_osc_temp)
     print(f"Received from OSC: {received_osc}")
 
 # Set up OSC server with retry logic
