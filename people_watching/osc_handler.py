@@ -82,6 +82,8 @@ def read_and_send_serial():
             # request data by sending a dot
             arduino_serial.write(b".") #* encode string to bytes
             line = arduino_serial.readline().decode('utf-8').strip()  # Decode bytes to string and strip whitespace
+            if not line:  # Skip if the line is empty
+                continue
             print(line)
             # print(f"Received from Arduino: {line}")
             data = parse_serial_line(line)
