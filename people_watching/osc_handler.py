@@ -129,6 +129,7 @@ def start_osc_server():
             time.sleep(2)
 
 def run_osc_handler():
+    global arduino_serial
     motor_controller = MotorController(arduino_serial)
     motor_controller.start()
     threading.Thread(target=read_and_send_serial, daemon=True).start()

@@ -47,7 +47,6 @@ class MotorController:
             y = data.get("y", 0)
             z = data.get("z", 0)
             message = f"{y},{z}\n"
-            print("sending: " + message)
             self.serial_connection.write(message.encode())
         except Exception as e:
             print(f"Error in _trigger_motor: {e}")
