@@ -65,7 +65,7 @@ def parse_serial_line(line):
         for part in parts:
             key, value = part.split(": ")
             if key in ["y", "z"]:
-                parsed[key] = int(value)
+                parsed[key] = int(float(value))
             elif key == "pressure":
                 parsed[key] = value == "1"
         return parsed
@@ -81,7 +81,7 @@ def read_and_send_serial():
         try:
             # request data by sending a dot
             arduino_serial.write(b".") #* encode string to bytes
-            line = arduino_serial.readline()
+            line = arduino_serial.readline().decode('utf-8').strip()  # Decode bytes to string and strip whitespace
             print(line)
             # print(f"Received from Arduino: {line}")
             data = parse_serial_line(line)
