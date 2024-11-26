@@ -90,6 +90,7 @@ def read_and_send_serial():
             while not line_done:
                 line = arduino_serial.readline().decode('utf-8').strip()  # Decode bytes to string
                 if not line:  # Skip if the line is empty
+                    print("no response from arduino.")
                     continue
                 
                 print(f"Raw line from Arduino: {line}")
