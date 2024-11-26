@@ -57,7 +57,7 @@ def init_osc_client(ip, port):
             print(f"Failed to connect to OSC server at {ip}:{port}: {e}. Retrying in 2 seconds...")
             time.sleep(2)
 
-osc_client = init_osc_client(OSC_IP, OSC_CLIENT_PORT)
+osc_client = init_osc_client(OSC_IP, OSC_SERVER_PORT)
 
 # Function to parse serial input
 def parse_serial_line(line):
@@ -104,8 +104,6 @@ def read_and_send_serial():
                     update_local_osc(data)
 
                     # Send parsed data via OSC
-                    print("sending data over OSC")
-                    print(data)
                     osc_client.send_message("/data", data)
         except Exception as e:
             print(f"Error in read_and_send_serial: {e}")
