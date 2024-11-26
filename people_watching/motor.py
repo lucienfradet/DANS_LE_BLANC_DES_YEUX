@@ -33,9 +33,7 @@ class MotorController:
                 elif time.time() - self.last_false_time >= self.required_duration:
                     # only move the motors if the other device is being used
                     print("pressure timer done")
-                    print(received_osc["pressure"])
-                    print(local_osc["pressure"])
-                    if received_osc["pressure"] and not local_osc["pressure"]:
+                    if not received_osc["pressure"] and local_osc["pressure"]:
                         print("sending serial to motors")
                         self._trigger_motor({"y": received_osc["y"], "z": received_osc["z"]})  # Replace with dynamic data if needed
                         self.last_false_time = None  # Reset timer after execution
