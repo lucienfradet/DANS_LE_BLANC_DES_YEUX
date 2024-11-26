@@ -6,6 +6,7 @@ This file does:
 - send the MPU (gyro) data of the other device to the arduino
 """
 
+from people_watching import motor
 import serial
 import socket
 import threading
@@ -23,6 +24,8 @@ ARDUINO_BAUDRATE = 9600
 OSC_IP = config['ip']['pi-ip']
 OSC_SERVER_PORT = 8888
 OSC_CLIENT_PORT = 9999
+
+motor_controller = None
 
 # Initialize serial connections with retry logic
 def init_serial_connection(port, baudrate):
@@ -79,32 +82,34 @@ def parse_serial_line(line):
 def read_and_send_serial():
     global local_osc
     global received_osc
+    global motor_controller
     while True:
         try:
             # Initialize variables
             line_done = False
 
-            # Request data by sending a dot
-            arduino_serial.write(b".\n")  # Trigger the Arduino to send data
+            if not motor_controller.moving:
+                # Request data by sending a dot
+                arduino_serial.write(b".\n")  # Trigger the Arduino to send data
 
-            # Read and process the line
-            while not line_done:
-                line = arduino_serial.readline().decode('utf-8').strip()  # Decode bytes to string
-                if not line:  # Skip if the line is empty
-                    print("no response from arduino.")
-                    continue
-                
-                # print(f"Raw line from Arduino: {line}")
-                data = parse_serial_line(line)  # Parse the received line
+                # Read and process the line
+                while not line_done:
+                    line = arduino_serial.readline().decode('utf-8').strip()  # Decode bytes to string
+                    if not line:  # Skip if the line is empty
+                        print("no response from arduino.")
+                        continue
+                    
+                    # print(f"Raw line from Arduino: {line}")
+                    data = parse_serial_line(line)  # Parse the received line
 
-                if data:  # Process only if valid data is parsed
-                    line_done = True  # Mark line as done
+                    if data:  # Process only if valid data is parsed
+                        line_done = True  # Mark line as done
 
-                    # Update the local OSC data
-                    update_local_osc(data)
+                        # Update the local OSC data
+                        update_local_osc(data)
 
-                    # Send parsed data via OSC
-                    osc_client.send_message("/data", [data["y"], data["z"], int(data["pressure"])])
+                        # Send parsed data via OSC
+                        osc_client.send_message("/data", [data["y"], data["z"], int(data["pressure"])])
         except Exception as e:
             print(f"Error in read_and_send_serial: {e}")
             time.sleep(1)

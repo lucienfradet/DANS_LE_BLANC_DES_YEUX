@@ -15,6 +15,7 @@ class MotorController:
         self.thread = threading.Thread(target=self._monitor_pressure)
         self.thread.daemon = True  # Ensures thread stops when the main program exits
         self.running = False
+        self.moving = False
 
     def start(self):
         self.running = True
@@ -35,9 +36,11 @@ class MotorController:
                     print("pressure timer done")
                     if not received_osc["pressure"] and local_osc["pressure"]:
                         # print("sending serial to motors")
+                        self.moving = True
                         self._trigger_motor({"y": received_osc["y"], "z": received_osc["z"]})  # Replace with dynamic data if needed
                         self.last_false_time = None  # Reset timer after execution
             else:
+                self.moving = False
                 self.last_false_time = None  # Reset timer if "pressure" is True
 
             time.sleep(self.check_interval)
@@ -48,7 +51,5 @@ class MotorController:
             z = data.get("z", 0)
             message = f"{y},{z}\n"
             self.serial_connection.write(message.encode())
-            line = self.serial_connection.readline().decode('utf-8').strip()  # Decode bytes to string
-            print(line)
         except Exception as e:
             print(f"Error in _trigger_motor: {e}")
