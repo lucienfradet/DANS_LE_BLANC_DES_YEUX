@@ -163,7 +163,7 @@ void loop()
       gz = 0;
     }
     // move to received y and z positions
-    else if (input_string) {
+    else if (input_string.length() > 0) {
       // Check if input has a single comma
       int commaIndex = input_string.indexOf(',');
       if (commaIndex == -1 || commaIndex == 0 || commaIndex == input_string.length() - 1) {

@@ -21,7 +21,8 @@ from motor import MotorController
 ARDUINO_SERIAL_PORT = "/dev/ttyACM0"
 ARDUINO_BAUDRATE = 9600
 OSC_IP = config['ip']['pi-ip']
-OSC_PORT = 8888
+OSC_SERVER_PORT = 8888
+OSC_CLIENT_PORT = 9999
 
 # Initialize serial connections with retry logic
 def init_serial_connection(port, baudrate):
@@ -55,7 +56,7 @@ def init_osc_client(ip, port):
             print(f"Failed to connect to OSC server at {ip}:{port}: {e}. Retrying in 2 seconds...")
             time.sleep(2)
 
-osc_client = init_osc_client(OSC_IP, OSC_PORT)
+osc_client = init_osc_client(OSC_IP, OSC_CLIENT_PORT)
 
 # Function to parse serial input
 def parse_serial_line(line):
@@ -83,7 +84,7 @@ def read_and_send_serial():
             line_done = False
 
             # Request data by sending a dot
-            arduino_serial.write(b".")  # Trigger the Arduino to send data
+            arduino_serial.write(b".\n")  # Trigger the Arduino to send data
 
             # Read and process the line
             while not line_done:
@@ -118,7 +119,7 @@ def start_osc_server():
         try:
             dispatcher = Dispatcher()
             dispatcher.map("/data", handle_osc_data)
-            server = BlockingOSCUDPServer(("0.0.0.0", OSC_PORT), dispatcher)
+            server = BlockingOSCUDPServer(("0.0.0.0", OSC_SERVER_PORT), dispatcher)
             print("OSC Server running...")
             server.serve_forever()
         except Exception as e:
