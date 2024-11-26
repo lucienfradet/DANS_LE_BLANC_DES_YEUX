@@ -31,6 +31,7 @@ def init_serial_connection(port, baudrate):
             print(f"Attempting to connect to serial port: {port}")
             connection = serial.Serial(port, baudrate, timeout=1)
             print(f"Connected to serial port: {port}")
+            time.sleep(2)  # Wait for Arduino to reset
             return connection
         except serial.SerialException as e:
             print(f"Failed to connect to serial port {port}: {e}. Retrying in 2 seconds...")
