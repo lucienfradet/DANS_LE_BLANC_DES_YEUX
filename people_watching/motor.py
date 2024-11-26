@@ -50,7 +50,7 @@ class MotorController:
             y = data.get("y", 0)
             z = data.get("z", 0)
             message = f"{y},{z}\n"
-            print("sending the arduino: {message.encode()}")
+            print(f"Sending to Arduino: {message.encode()}")
             self.serial_connection.write(message.encode())
         except Exception as e:
             print(f"Error in _trigger_motor: {e}")
