@@ -79,17 +79,16 @@ def read_and_send_serial():
     global received_osc
     while True:
         try:
-            if arduino_serial.in_waiting > 0:
-                # request data by sending a dot
-                arduino_serial.write(b".") #* encode string to bytes
-                line = arduino_serial.readline().decode().strip()
-                # print(f"Received from Arduino: {line}")
-                data = parse_serial_line(line)
-                # update local_osc
-                update_local_osc(data)
-                if data:
-                    # Send parsed data via OSC
-                    osc_client.send_message("/data", data)
+            # request data by sending a dot
+            arduino_serial.write(b".") #* encode string to bytes
+            line = arduino_serial.readline().decode().strip()
+            # print(f"Received from Arduino: {line}")
+            data = parse_serial_line(line)
+            # update local_osc
+            update_local_osc(data)
+            if data:
+                # Send parsed data via OSC
+                osc_client.send_message("/data", data)
         except Exception as e:
             print(f"Error in read_and_send_serial: {e}")
             time.sleep(1)
