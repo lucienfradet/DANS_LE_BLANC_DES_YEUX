@@ -133,6 +133,7 @@ def start_osc_server():
             time.sleep(2)
 
 def run_osc_handler():
+    global motor_controller
     global arduino_serial
     motor_controller = MotorController(arduino_serial)
     motor_controller.start()
