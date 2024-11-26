@@ -81,7 +81,8 @@ def read_and_send_serial():
         try:
             # request data by sending a dot
             arduino_serial.write(b".") #* encode string to bytes
-            line = arduino_serial.readline().decode().strip()
+            line = arduino_serial.readline()
+            print(line)
             # print(f"Received from Arduino: {line}")
             data = parse_serial_line(line)
             # update local_osc
