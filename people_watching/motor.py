@@ -34,7 +34,7 @@ class MotorController:
                     # only move the motors if the other device is being used
                     print("pressure timer done")
                     if not received_osc["pressure"] and local_osc["pressure"]:
-                        print("sending serial to motors")
+                        # print("sending serial to motors")
                         self._trigger_motor({"y": received_osc["y"], "z": received_osc["z"]})  # Replace with dynamic data if needed
                         self.last_false_time = None  # Reset timer after execution
             else:
@@ -47,6 +47,7 @@ class MotorController:
             y = data.get("y", 0)
             z = data.get("z", 0)
             message = f"{y},{z}\n"
+            print("sending: " + message)
             self.serial_connection.write(message.encode())
         except Exception as e:
             print(f"Error in _trigger_motor: {e}")
