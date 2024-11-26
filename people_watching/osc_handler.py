@@ -113,7 +113,7 @@ def read_and_send_serial():
 def handle_osc_data(unused_addr, y, z, pressure):
     received_osc_temp = {"y": y, "z": z, "pressure": pressure}
     update_recieved_osc(received_osc_temp)
-    print(f"Received from OSC: {received_osc}")
+    # print(f"Received from OSC: {received_osc}")
 
 # Set up OSC server with retry logic
 def start_osc_server():

@@ -7,7 +7,7 @@ import time
 from shared_variables import received_osc, local_osc
 
 class MotorController:
-    def __init__(self, serial_connection, required_duration=2, check_interval=0.1):
+    def __init__(self, serial_connection, required_duration=1, check_interval=0.1):
         self.serial_connection = serial_connection
         self.required_duration = required_duration
         self.check_interval = check_interval
@@ -33,6 +33,8 @@ class MotorController:
                 elif time.time() - self.last_false_time >= self.required_duration:
                     # only move the motors if the other device is being used
                     print("pressure timer done")
+                    print(received_osc["pressure"])
+                    print(local_osc["pressure"])
                     if received_osc["pressure"] and not local_osc["pressure"]:
                         print("sending serial to motors")
                         self._trigger_motor({"y": received_osc["y"], "z": received_osc["z"]})  # Replace with dynamic data if needed
