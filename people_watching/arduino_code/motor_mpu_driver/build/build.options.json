@@ -1,0 +1,9 @@
+{
+  "additionalFiles": "",
+  "compiler.optimization_flags": "",
+  "customBuildProperties": "build.warn_data_percentage=75",
+  "fqbn": "arduino:avr:uno",
+  "hardwareFolders": "/home/lucienfradet/.arduino15/packages",
+  "otherLibrariesFolders": "/home/lucienfradet/Arduino/libraries",
+  "sketchLocation": "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver"
+}
