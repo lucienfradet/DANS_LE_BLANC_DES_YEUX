@@ -104,14 +104,13 @@ def read_and_send_serial():
                     update_local_osc(data)
 
                     # Send parsed data via OSC
-                    osc_client.send_message("/data", data)
+                    osc_client.send_message("/data", [data["y"], data["z"], int(data["pressure"])])
         except Exception as e:
             print(f"Error in read_and_send_serial: {e}")
             time.sleep(1)
 
 # OSC handler function
 def handle_osc_data(unused_addr, y, z, pressure):
-    print("handle_osc_data called")
     received_osc_temp = {"y": y, "z": z, "pressure": pressure}
     update_recieved_osc(received_osc_temp)
     print(f"Received from OSC: {received_osc}")
