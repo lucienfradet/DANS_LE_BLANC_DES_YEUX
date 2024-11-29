@@ -1,11 +1,6 @@
 # Dans le blanc des yeux
 ## CART461 - Concordia Universiy - Montréal - 2024
-### Lucien Cusson-Fradet
-### Maxime-Alexandre Gosselin
-### Michael Hemingway
-### Shayne Larocque
-### Alexander Terziyski
-### Thomas Rompré
+### Lucien Cusson-Fradet - Maxime-Alexandre Gosselin - Michael Hemingway - Shayne Larocque - Alexander Terziyski - Thomas Rompré
 
 **This repository contains the code base for the project** *Dans le blanc des yeux*
 
