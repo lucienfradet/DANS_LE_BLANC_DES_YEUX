@@ -1,5 +1,7 @@
 #!/bin/bash
 
+export DISPLAY=:1
+
 # Script to launch Dans le Blanc des Yeux art installation
 
 # Ensure we're in the right directory

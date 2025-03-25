@@ -30,7 +30,10 @@ apt-get install -y \
   gstreamer1.0-libav \
   libgirepository1.0-dev \
   git \
-  arduino-cli
+  arduino-cli \
+  libcamera-dev \
+  libcamera-apps \
+  gstreamer1.0-libcamera
 
 # Create a Python virtual environment (optional)
 echo "Creating Python virtual environment..."
@@ -60,7 +63,7 @@ WantedBy=multi-user.target
 EOF
 
 # Enable the service
-systemctl enable dans-le-blanc-des-yeux.service
+# systemctl enable dans-le-blanc-des-yeux.service
 
 # Make run.sh executable
 chmod +x run.sh
