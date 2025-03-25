@@ -78,9 +78,9 @@ if ! command -v tailscale &> /dev/null; then
 fi
 
 # Creating configuration backup
-echo "Creating configuration backup..."
-mkdir -p backups
-cp config.ini backups/config.ini.bak
+# echo "Creating configuration backup..."
+# mkdir -p backups
+# cp config.ini backups/config.ini.bak
 
 # Setup complete
 echo ""
