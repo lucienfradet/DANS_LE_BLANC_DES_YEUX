@@ -49,7 +49,7 @@ if __name__ == "__main__":
         
         # Start visualizer if requested
         if args.visualize:
-            from display import run_visualizer
+            from debug_visualizer import run_visualizer
             print("Starting terminal visualizer...")
             visualizer = run_visualizer()
         
