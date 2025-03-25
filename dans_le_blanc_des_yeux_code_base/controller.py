@@ -59,9 +59,32 @@ if __name__ == "__main__":
         # Start OSC handler
         osc_handler, serial_handler = run_osc_handler(remote_ip)
         
-        # Initialize and start motor controller
+        # Initialize and start motor controller with parameters from config
         print("Starting motor controller...")
-        motor_controller = MotorController(serial_handler)
+        
+        # Get motor settings from config or use defaults if not present
+        motor_params = {}
+        if 'motor' in config:
+            try:
+                motor_params['required_duration'] = config.getfloat('motor', 'required_duration', fallback=0.8)
+                motor_params['check_interval'] = config.getfloat('motor', 'check_interval', fallback=0.1)
+                motor_params['motion_timeout'] = config.getfloat('motor', 'motion_timeout', fallback=2.0)
+                print(f"Using motor settings from config: {motor_params}")
+            except (ValueError, configparser.Error) as e:
+                print(f"Error reading motor config: {e}. Using defaults.")
+        
+        # Create motor controller with config parameters
+        motor_controller = MotorController(serial_handler, **motor_params)
+        
+        # Set minimum interval between movements if specified in config
+        if 'motor' in config and 'movement_min_interval' in config['motor']:
+            try:
+                interval = config.getfloat('motor', 'movement_min_interval', fallback=0.5)
+                motor_controller.movement_min_interval = interval
+                print(f"Set movement_min_interval to {interval} seconds")
+            except (ValueError, configparser.Error):
+                pass
+                
         motor_controller.start()
         
         # Keep main thread alive
