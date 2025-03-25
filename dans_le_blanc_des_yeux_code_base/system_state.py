@@ -5,6 +5,7 @@ Uses a singleton pattern to ensure a single state instance across the applicatio
 
 import threading
 import configparser
+import time  # Added import for timestamp
 from typing import Dict, Any, List, Callable
 
 class SystemState:
@@ -97,6 +98,23 @@ class SystemState:
     def get_config(self) -> configparser.ConfigParser:
         """Get the configuration object."""
         return self._config
+    
+    def get_last_motor_command(self) -> Dict[str, Any]:
+        """Get the last motor command that was sent."""
+        with self._state_lock:
+            return self._last_motor_command.copy()
+    
+    def update_motor_command(self, y: int, z: int) -> None:
+        """Update the last motor command information."""
+        with self._state_lock:
+            self._last_motor_command = {
+                "y": y,
+                "z": z,
+                "timestamp": time.time()
+            }
+        
+        # Notify observers of motor command
+        self._notify_observers("motor_command")
     
     def add_observer(self, callback: Callable[[str], None]) -> None:
         """Add an observer to be notified of state changes."""
