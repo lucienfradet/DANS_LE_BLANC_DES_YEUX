@@ -1,12 +1,17 @@
 """
 Video streaming module for the Dans le Blanc des Yeux installation.
-Handles sending and receiving video streams between devices using GStreamer.
+Handles sending and receiving video streams between devices using custom UDP streaming.
+
+Streaming Logic:
+1. When remote device has pressure=true and local doesn't: Send external PiCamera feed
+2. When local device has pressure=true and remote doesn't: Receive remote's external PiCamera feed
+3. When both have pressure=true: Send internal camera feed, receive remote's internal camera feed
+4. When neither has pressure: No streaming required
 """
 
 import os
 import time
 import threading
-import subprocess
 import socket
 import struct
 import numpy as np
@@ -38,7 +43,6 @@ class VideoStreamer:
         # Threading
         self.running = False
         self.threads = []
-        self.sender_processes = []
         self.lock = threading.Lock()
         
         # Frame dimensions and quality
@@ -66,8 +70,8 @@ class VideoStreamer:
         # Start receiver threads
         self._start_receiver_threads()
         
-        # Start internal camera stream by default (always active)
-        self._start_internal_stream()
+        # Check initial state to see if we need to start streaming right away
+        self._update_streaming_based_on_state()
         
         print("Video streamer started")
         return True
@@ -77,7 +81,7 @@ class VideoStreamer:
         print("Stopping video streamer...")
         self.running = False
         
-        # Stop any active GStreamer processes
+        # Stop any active streaming
         self._stop_all_streams()
         
         # Wait for threads to finish
@@ -107,23 +111,31 @@ class VideoStreamer:
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
         if changed_state in ["local", "remote"]:
-            self._handle_pressure_state_change()
+            self._update_streaming_based_on_state()
     
-    def _handle_pressure_state_change(self) -> None:
-        """Handle changes in pressure state to control external camera streaming."""
+    def _update_streaming_based_on_state(self) -> None:
+        """Update streaming state based on the current system state."""
         local_state = system_state.get_local_state()
         remote_state = system_state.get_remote_state()
         
-        # If remote has pressure and we don't, start streaming our external camera
-        if remote_state["pressure"] and not local_state["pressure"] and remote_state["connected"]:
-            if not self.external_sending:
-                print("Remote has pressure, starting external camera stream")
-                self._start_external_stream()
+        # Only proceed if remote is connected
+        if not remote_state.get("connected", False):
+            self._stop_all_streams()
+            return
+        
+        # Case 1: Both have pressure - stream internal cameras
+        if local_state.get("pressure", False) and remote_state.get("pressure", False):
+            self._start_internal_stream()
+            self._stop_external_stream()
+        
+        # Case 2: Remote has pressure but local doesn't - stream our external camera
+        elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
+            self._start_external_stream()
+            self._stop_internal_stream()
+        
+        # Case 3: No streaming needed (local has pressure but remote doesn't, or neither has pressure)
         else:
-            # Otherwise, stop the external stream if it's running
-            if self.external_sending:
-                print("Stopping external camera stream")
-                self._stop_external_stream()
+            self._stop_all_streams()
     
     def _start_receiver_threads(self) -> None:
         """Start threads to receive video streams."""
@@ -142,7 +154,6 @@ class VideoStreamer:
     def _start_internal_stream(self) -> bool:
         """Start streaming the internal camera to the remote device."""
         if self.internal_sending:
-            print("Internal camera already streaming")
             return True
         
         if not self.camera_manager.is_internal_camera_available():
@@ -166,7 +177,6 @@ class VideoStreamer:
     def _start_external_stream(self) -> bool:
         """Start streaming the external camera to the remote device."""
         if self.external_sending:
-            print("External camera already streaming")
             return True
         
         if not self.camera_manager.is_external_camera_available():
@@ -189,28 +199,20 @@ class VideoStreamer:
     
     def _stop_internal_stream(self) -> None:
         """Stop streaming the internal camera."""
-        self.internal_sending = False
-        print("Stopped internal camera stream")
+        if self.internal_sending:
+            self.internal_sending = False
+            print("Stopped internal camera stream")
     
     def _stop_external_stream(self) -> None:
         """Stop streaming the external camera."""
-        self.external_sending = False
-        print("Stopped external camera stream")
+        if self.external_sending:
+            self.external_sending = False
+            print("Stopped external camera stream")
     
     def _stop_all_streams(self) -> None:
         """Stop all active streams."""
-        self.internal_sending = False
-        self.external_sending = False
-        
-        # Terminate any GStreamer processes
-        for process in self.sender_processes:
-            try:
-                process.terminate()
-                process.wait(timeout=1.0)
-            except Exception:
-                pass
-        
-        self.sender_processes = []
+        self._stop_internal_stream()
+        self._stop_external_stream()
         print("All streams stopped")
     
     def _create_udp_socket(self, port: int) -> socket.socket:
@@ -390,7 +392,7 @@ def test_video_streamer():
     from camera_manager import CameraManager
     import cv2
     
-    # Set up dummy system state for testing
+    # Set up system state for testing
     system_state.update_local_state({"pressure": False})
     system_state.update_remote_state({"pressure": True, "connected": True})
     
@@ -405,29 +407,55 @@ def test_video_streamer():
     video_streamer.start()
     
     try:
+        # Create display window
+        cv2.namedWindow("Test Display", cv2.WINDOW_NORMAL)
+        
+        print("\nTesting different pressure states:")
+        print("\n1. Remote pressure, local no pressure - Should stream our external camera")
+        time.sleep(5)
+        
+        print("\n2. Both have pressure - Should stream our internal camera")
+        system_state.update_local_state({"pressure": True})
+        time.sleep(5)
+        
+        print("\n3. Local pressure, remote no pressure - Should stop streaming")
+        system_state.update_remote_state({"pressure": False})
+        time.sleep(5)
+        
+        print("\n4. Neither has pressure - Should stop streaming")
+        system_state.update_local_state({"pressure": False})
+        
+        print("\nStreaming test complete. Press any key to exit.")
         while True:
-            # Get received frames
+            # Display the frames we're receiving (for testing)
             internal_frame = video_streamer.get_received_internal_frame()
             external_frame = video_streamer.get_received_external_frame()
             
-            # Display received internal frame
+            display_frame = None
             if internal_frame is not None:
-                cv2.imshow("Received Internal Camera", internal_frame)
+                display_frame = internal_frame
+                cv2.putText(display_frame, "Received Internal", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            elif external_frame is not None:
+                display_frame = external_frame
+                cv2.putText(display_frame, "Received External", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
+            if display_frame is not None:
+                cv2.imshow("Test Display", display_frame)
             
-            # Display received external frame
-            if external_frame is not None:
-                cv2.imshow("Received External Camera", external_frame)
-            
-            # Exit on 'q' key
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            # Exit on key press
+            if cv2.waitKey(30) >= 0:
                 break
+            
+            time.sleep(0.033)  # ~30fps
     except KeyboardInterrupt:
         print("Test interrupted by user")
     finally:
         # Clean up
+        cv2.destroyAllWindows()
         video_streamer.stop()
         camera_manager.stop()
-        cv2.destroyAllWindows()
 
 
 # Run test if executed directly
