@@ -1,16 +1,16 @@
 #include <Arduino.h>
-#line 1 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/pressure_plate_controller/pressure_plate_controller.ino"
+#line 1 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/pressure_plate_controller/pressure_plate_controller.ino"
 #define PRESSURE_SENSOR_1_PIN A0
 #define PRESSURE_SENSOR_2_PIN A1
 #define MOTOR_ENABLE_PIN 4    // Pin controlling motor enable (adjust as needed)
 
 const int threshold = 900;
 
-#line 7 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/pressure_plate_controller/pressure_plate_controller.ino"
+#line 7 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/pressure_plate_controller/pressure_plate_controller.ino"
 void setup();
-#line 16 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/pressure_plate_controller/pressure_plate_controller.ino"
+#line 16 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/pressure_plate_controller/pressure_plate_controller.ino"
 void loop();
-#line 7 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/arduino_code/pressure_plate_controller/pressure_plate_controller.ino"
+#line 7 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/pressure_plate_controller/pressure_plate_controller.ino"
 void setup() {
   Serial.begin(9600);
 

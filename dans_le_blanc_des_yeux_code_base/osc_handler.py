@@ -4,6 +4,7 @@ This file does:
 - send and recieve that data between the two devices
 - store the data in an object
 - send the MPU (gyro) data of the other device to the arduino
+- handle eye detection status
 """
 
 import serial
@@ -44,8 +45,6 @@ arduino_serial = init_serial_connection(ARDUINO_SERIAL_PORT, ARDUINO_BAUDRATE)
 
 # OSC client and object storage
 osc_client = None
-# received_osc = {"y": 0, "z": 0, "pressure": False}
-# local_osc = {"y": 0, "z": 0, "pressure": False}
 
 # Initialize OSC client with retry logic
 def init_osc_client(ip, port):
@@ -107,15 +106,27 @@ def read_and_send_serial():
                         # Update the local OSC data
                         update_local_osc(data)
 
-                        # Send parsed data via OSC
-                        osc_client.send_message("/data", [data["y"], data["z"], int(data["pressure"])])
+                        # Send parsed data via OSC, including eyes_detected state
+                        osc_client.send_message("/data", [
+                            data["y"], 
+                            data["z"], 
+                            int(data["pressure"]), 
+                            int(local_osc.get("eyes_detected", False)),
+                            local_osc.get("state", "HOME")
+                        ])
         except Exception as e:
             print(f"Error in read_and_send_serial: {e}")
             time.sleep(1)
 
 # OSC handler function
-def handle_osc_data(unused_addr, y, z, pressure):
-    received_osc_temp = {"y": y, "z": z, "pressure": pressure}
+def handle_osc_data(unused_addr, y, z, pressure, eyes_detected, state):
+    received_osc_temp = {
+        "y": y, 
+        "z": z, 
+        "pressure": pressure == 1, 
+        "eyes_detected": eyes_detected == 1,
+        "state": state
+    }
     update_recieved_osc(received_osc_temp)
     # print(f"Received from OSC: {received_osc}")
 
