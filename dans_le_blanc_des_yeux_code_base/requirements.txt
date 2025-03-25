@@ -1,2 +1,4 @@
 pyserial
 python-osc
+opencv-python
+numpy

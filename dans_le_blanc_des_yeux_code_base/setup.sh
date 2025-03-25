@@ -34,7 +34,7 @@ apt-get install -y \
 
 # Create a Python virtual environment (optional)
 echo "Creating Python virtual environment..."
-su - $SUDO_USER -c "python3 -m venv ~/dans_le_blanc_env"
+su - $SUDO_USER -c "python3 -m venv ~/dans_le_blanc_des_yeux_env --system-site-packages"
 
 # Install Python packages
 echo "Installing Python packages..."
