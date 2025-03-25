@@ -1,11 +1,11 @@
 """
-Robust OSC communication handler with timeout management, heartbeat,
-and proper error recovery.
+OSC communication handler with enhanced debugging and connection verification.
 """
 
 import time
 import threading
 import socket
+import subprocess
 from typing import Dict, Any, Optional, Callable, List, Tuple
 
 from pythonosc.udp_client import SimpleUDPClient
@@ -18,8 +18,8 @@ from serial_handler import SerialHandler, parse_serial_data
 # Constants
 OSC_SERVER_PORT = 8888
 OSC_CLIENT_PORT = 9999
-HEARTBEAT_INTERVAL = 5.0  # seconds
-CONNECTION_TIMEOUT = 10.0  # seconds
+HEARTBEAT_INTERVAL = 2.0  # seconds
+CONNECTION_TIMEOUT = 5.0  # seconds
 MAX_RECONNECT_ATTEMPTS = 5
 
 class OSCHandler:
@@ -44,6 +44,72 @@ class OSCHandler:
         
         # Callbacks
         self.connection_status_callback = None
+        
+        # Network connectivity check
+        self._check_network_connectivity()
+    
+    def _check_network_connectivity(self):
+        """Check if the remote IP is reachable."""
+        print(f"\n--- Network Connectivity Check ---")
+        print(f"Testing connection to remote device at {self.remote_ip}...")
+        
+        # Try to ping the remote IP
+        try:
+            ping_param = "-n 1" if hasattr(socket, 'SOCK_RAW') else "-c 1"
+            ping_cmd = f"ping {ping_param} {self.remote_ip}"
+            exit_code = subprocess.call(
+                ping_cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            if exit_code == 0:
+                print(f"✅ Remote device is reachable via ping")
+            else:
+                print(f"⚠️ WARNING: Remote device does not respond to ping")
+        except Exception as e:
+            print(f"⚠️ WARNING: Ping test failed: {str(e)}")
+        
+        # Try to establish a TCP connection to the OSC port
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            result = s.connect_ex((self.remote_ip, OSC_CLIENT_PORT))
+            s.close()
+            
+            if result == 0:
+                print(f"✅ Remote OSC port {OSC_CLIENT_PORT} is open and reachable")
+            else:
+                print(f"⚠️ WARNING: Remote OSC port {OSC_CLIENT_PORT} is not reachable (error code: {result})")
+                print(f"   This may prevent OSC communication. Check firewall settings.")
+        except Exception as e:
+            print(f"⚠️ WARNING: OSC port test failed: {str(e)}")
+        
+        # Print local network interfaces for debugging
+        try:
+            print("\n--- Local Network Interfaces ---")
+            if hasattr(subprocess, 'check_output'):
+                if 'posix' in socket.module.__name__:
+                    interfaces = subprocess.check_output("ifconfig || ip addr", shell=True).decode('utf-8')
+                else:
+                    interfaces = subprocess.check_output("ipconfig", shell=True).decode('utf-8')
+                
+                # Extract and print just the IP addresses for brevity
+                import re
+                ip_pattern = r'inet (?:addr:)?(\d+\.\d+\.\d+\.\d+)'
+                matches = re.findall(ip_pattern, interfaces)
+                
+                print("Available IP addresses on this device:")
+                for i, ip in enumerate(matches):
+                    if ip.startswith('127.'):
+                        print(f"  {ip} (localhost)")
+                    else:
+                        print(f"  {ip}")
+        except Exception as e:
+            print(f"Could not determine network interfaces: {str(e)}")
+        
+        print("--- End Network Check ---\n")
     
     def start(self) -> bool:
         """Start the OSC handler and all its threads."""
@@ -60,6 +126,9 @@ class OSCHandler:
         if not self._start_osc_server():
             print("Failed to start OSC server")
             return False
+        
+        # Update system state with initial connection status
+        system_state.update_connection_status(False)
         
         # Start heartbeat thread
         heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
@@ -109,11 +178,16 @@ class OSCHandler:
         
         for attempt in range(max_retries):
             try:
-                self.osc_client.send_message("/data", [
-                    data["y"], data["z"], int(data["pressure"])
-                ])
+                # Convert to appropriate types for OSC
+                osc_data = [
+                    int(data["y"]), 
+                    int(data["z"]), 
+                    1 if data["pressure"] else 0
+                ]
+                
+                self.osc_client.send_message("/data", osc_data)
                 return True
-            except (socket.error, OSError) as e:
+            except (socket.error, OSError, ValueError) as e:
                 print(f"Error sending OSC data (attempt {attempt+1}/{max_retries}): {str(e)}")
                 if attempt == max_retries - 1:
                     # Last attempt failed, update connection status
@@ -157,28 +231,42 @@ class OSCHandler:
                     ("0.0.0.0", OSC_SERVER_PORT), 
                     dispatcher
                 )
-                self.osc_server.socket.settimeout(0.5)  # Short timeout for responsive shutdown
+                
+                # Set a shorter socket timeout for responsive shutdown
+                self.osc_server.socket.settimeout(0.5)
                 
                 # Start server in a separate thread
                 self.server_thread = threading.Thread(target=self._run_server)
                 self.server_thread.daemon = True
                 self.server_thread.start()
                 
-                print(f"OSC server started on port {OSC_SERVER_PORT}")
+                # Verify the server is running
+                time.sleep(0.5)
+                if not self.server_thread.is_alive():
+                    raise Exception("Server thread stopped unexpectedly")
+                
+                print(f"✅ OSC server started on port {OSC_SERVER_PORT}")
                 return True
             except (socket.error, OSError) as e:
-                print(f"Failed to start OSC server: {str(e)}")
+                print(f"❌ Failed to start OSC server: {str(e)}")
+                # Check if port is already in use
+                if "Address already in use" in str(e):
+                    print("   Port is already in use. Another instance might be running.")
+                    print("   Try running: 'sudo lsof -i :{OSC_SERVER_PORT}' to check")
+                    
                 if attempt < max_retries - 1:
-                    print(f"Retrying in 2 seconds...")
+                    print(f"   Retrying in 2 seconds...")
                     time.sleep(2)
         
-        print(f"Failed to start OSC server after {max_retries} attempts")
+        print(f"❌ Failed to start OSC server after {max_retries} attempts")
         return False
     
     def _run_server(self) -> None:
         """Run the OSC server with exception handling."""
         try:
+            print("OSC server thread starting...")
             self.osc_server.serve_forever()
+            print("OSC server thread exiting normally")
         except Exception as e:
             if self.running:  # Only log if not intentionally stopped
                 print(f"OSC server error: {str(e)}")
@@ -191,6 +279,10 @@ class OSCHandler:
             was_connected = self.remote_connected
             self.remote_connected = True
         
+        # Print debug info for first few messages
+        if not was_connected:
+            print(f"📡 First data received from remote: y={y}, z={z}, pressure={pressure}")
+        
         # Update connection status if changed
         if not was_connected:
             self._update_connection_status(True)
@@ -198,7 +290,6 @@ class OSCHandler:
         # Parse and store data
         received_data = {"y": y, "z": z, "pressure": bool(pressure)}
         system_state.update_remote_state(received_data)
-        print(f"Received from OSC: {received_data}")
     
     def _handle_heartbeat(self, unused_addr, value) -> None:
         """Handle heartbeat from remote device."""
@@ -209,14 +300,21 @@ class OSCHandler:
         
         # Update connection status if changed
         if not was_connected:
+            print("💓 Heartbeat received from remote device")
             self._update_connection_status(True)
     
     def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats to remote device."""
+        print("Heartbeat thread started")
+        heartbeat_count = 0
+        
         while not self.stop_event.is_set():
             if self.osc_client:
                 try:
                     self.osc_client.send_message("/heartbeat", [1])
+                    heartbeat_count += 1
+                    if heartbeat_count % 10 == 0:  # Log every 10 heartbeats
+                        print(f"💓 Sent heartbeat #{heartbeat_count}")
                 except Exception as e:
                     print(f"Error sending heartbeat: {str(e)}")
             
@@ -228,21 +326,33 @@ class OSCHandler:
     
     def _connection_monitor_loop(self) -> None:
         """Monitor connection status based on heartbeats."""
+        print("Connection monitor thread started")
+        
         while not self.stop_event.is_set():
             with self.heartbeat_lock:
-                if (self.remote_connected and 
-                    time.time() - self.last_heartbeat_received > CONNECTION_TIMEOUT):
-                    print("Remote device connection timeout")
+                current_time = time.time()
+                time_since_last_heartbeat = current_time - self.last_heartbeat_received
+                
+                if self.remote_connected and time_since_last_heartbeat > CONNECTION_TIMEOUT:
+                    print(f"⚠️ Remote device connection timeout ({time_since_last_heartbeat:.1f}s since last heartbeat)")
                     self.remote_connected = False
                     self._update_connection_status(False)
+                
+                # For debugging, periodically print the time since last heartbeat
+                if self.last_heartbeat_received > 0 and int(current_time) % 30 == 0:
+                    print(f"Time since last heartbeat: {time_since_last_heartbeat:.1f}s")
             
             # Check connection every second
             time.sleep(1)
     
     def _update_connection_status(self, connected: bool) -> None:
         """Update connection status and notify via callback if registered."""
-        print(f"Remote device connection: {'Connected' if connected else 'Disconnected'}")
+        print(f"Remote device connection: {'✅ Connected' if connected else '❌ Disconnected'}")
         
+        # Update system state
+        system_state.update_connection_status(connected)
+        
+        # Notify via callback if registered
         if self.connection_status_callback:
             self.connection_status_callback(connected)
     

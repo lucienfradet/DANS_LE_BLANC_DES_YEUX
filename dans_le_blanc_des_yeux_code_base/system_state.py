@@ -28,13 +28,15 @@ class SystemState:
         self._local_device = {
             "y": 0,
             "z": 0,
-            "pressure": False
+            "pressure": False,
+            "moving": False
         }
         
         self._remote_device = {
             "y": 0,
             "z": 0,
-            "pressure": True
+            "pressure": True,
+            "connected": False  # Track if remote device is connected
         }
         
         # Configuration
@@ -71,6 +73,13 @@ class SystemState:
                     self._remote_device[key] = value
         
         self._notify_observers("remote")
+    
+    def update_connection_status(self, connected: bool) -> None:
+        """Update the connection status for the remote device."""
+        with self._state_lock:
+            self._remote_device["connected"] = connected
+        
+        self._notify_observers("connection")
     
     def get_config(self) -> configparser.ConfigParser:
         """Get the configuration object."""
