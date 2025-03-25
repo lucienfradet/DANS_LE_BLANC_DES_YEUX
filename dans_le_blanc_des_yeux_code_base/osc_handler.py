@@ -1,6 +1,6 @@
 """
-Improved OSC communication handler with proper server startup sequence
-and persistent connection attempts.
+OSC communication handler with corrected port configuration to ensure
+both devices can properly communicate with each other.
 """
 
 import time
@@ -17,10 +17,10 @@ from system_state import system_state
 from serial_handler import SerialHandler, parse_serial_data
 
 # Constants
-LOCAL_SERVER_PORT = 8888   # Port to listen on
-REMOTE_CLIENT_PORT = 9999  # Port to send to on remote device
-HEARTBEAT_INTERVAL = 3.0   # seconds
-CONNECTION_TIMEOUT = 10.0  # seconds
+LOCAL_SERVER_PORT = 8888           # Port to listen on
+REMOTE_SERVER_PORT = 8888          # Port the remote device is listening on (changed from 9999!)
+HEARTBEAT_INTERVAL = 3.0           # seconds
+CONNECTION_TIMEOUT = 10.0          # seconds
 
 class OSCHandler:
     def __init__(self, remote_ip: str, serial_handler: SerialHandler):
@@ -66,7 +66,7 @@ class OSCHandler:
             print(f"Could not determine network interfaces: {str(e)}")
             
         print(f"OSC server listening on: 0.0.0.0:{LOCAL_SERVER_PORT}")
-        print(f"OSC client sending to: {self.remote_ip}:{REMOTE_CLIENT_PORT}")
+        print(f"OSC client sending to: {self.remote_ip}:{REMOTE_SERVER_PORT}")
         print(f"--- End Network Info ---\n")
     
     def start(self) -> bool:
@@ -169,8 +169,8 @@ class OSCHandler:
     def _init_osc_client(self) -> bool:
         """Initialize OSC client with retry mechanism."""
         try:
-            print(f"Initializing OSC client to {self.remote_ip}:{REMOTE_CLIENT_PORT}")
-            self.osc_client = SimpleUDPClient(self.remote_ip, REMOTE_CLIENT_PORT)
+            print(f"Initializing OSC client to {self.remote_ip}:{REMOTE_SERVER_PORT}")
+            self.osc_client = SimpleUDPClient(self.remote_ip, REMOTE_SERVER_PORT)
             
             # Test connection by sending a heartbeat
             self.osc_client.send_message("/heartbeat", [1])
