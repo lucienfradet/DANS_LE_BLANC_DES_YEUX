@@ -1,8 +1,21 @@
 #!/bin/bash
 
-export DISPLAY=:1
-
 # Script to launch Dans le Blanc des Yeux art installation
+# Usage: ./run.sh [visual]
+#   visual - Enable terminal visualization (optional)
+
+# Parse arguments
+ENABLE_VISUAL=0
+for arg in "$@"
+do
+    if [ "$arg" == "visual" ]; then
+        ENABLE_VISUAL=1
+        echo "Terminal visualization enabled"
+    fi
+done
+
+# Export display variable for X11 forwarding if needed
+export DISPLAY=:1
 
 # Ensure we're in the right directory
 cd "$(dirname "$0")"
@@ -43,7 +56,7 @@ pip3 install -r requirements.txt
 # Check if Arduino is connected
 if [ ! -e "/dev/ttyACM0" ]; then
     echo "Warning: Arduino device not found at /dev/ttyACM0"
-    echo "Please check the connection or update the port in osc_handler.py"
+    echo "Please check the connection or update the port in serial_handler.py"
     read -p "Continue anyway? (y/n) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -51,9 +64,13 @@ if [ ! -e "/dev/ttyACM0" ]; then
     fi
 fi
 
-# Start the application
+# Start the application with or without visualization
 echo "Starting Dans le Blanc des Yeux..."
-python3 controller.py
+if [ $ENABLE_VISUAL -eq 1 ]; then
+    python3 controller.py --visualize
+else
+    python3 controller.py
+fi
 
 # If the application exits, show a message
 echo "Application has exited."
