@@ -1,15 +1,13 @@
 #!/bin/bash
 
 # Script to launch Dans le Blanc des Yeux art installation
-# Usage: ./run.sh [visual] [disable-video] [headless]
+# Usage: ./run.sh [visual] [disable-video]
 #   visual - Enable terminal visualization (optional)
 #   disable-video - Disable video components (optional)
-#   headless - Use headless display mode without X11/Qt (optional)
 
 # Parse arguments
 ENABLE_VISUAL=0
 DISABLE_VIDEO=0
-HEADLESS_MODE=0
 for arg in "$@"
 do
     if [ "$arg" == "visual" ]; then
@@ -20,22 +18,18 @@ do
         DISABLE_VIDEO=1
         echo "Video components disabled"
     fi
-    if [ "$arg" == "headless" ]; then
-        HEADLESS_MODE=1
-        echo "Headless display mode enabled"
-    fi
 done
 
 # Ensure we're in the right directory
 cd "$(dirname "$0")"
 
-# Check dependencies
-echo "Checking dependencies..."
-
 # Function to check if a command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
+
+# Check dependencies
+echo "Checking dependencies..."
 
 # Check Python
 if ! command_exists python3; then
@@ -75,43 +69,61 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
         ls -l /dev/video*
     fi
     
-    # Check for PiCamera
-    if command_exists vcgencmd; then
-        echo "Checking PiCamera status..."
-        vcgencmd get_camera
+    # Update config.ini with appropriate camera information
+    # For Pi 5, we should use correct camera ID from detected devices
+    if [ -f "config.ini" ]; then
+        # Try to detect proper camera settings
+        # For PiCamera: Usually /dev/video0-7 on Pi 5 (rp1-cfe)
+        if grep -q "internal_camera_id" config.ini; then
+            echo "Using existing camera settings in config.ini"
+        else
+            echo "Adding default camera settings to config.ini (PiCamera for Pi 5)"
+            # We'll use /dev/video0 as a starting point for Pi 5
+            echo -e "\n[video]\ninternal_camera_id = 0\nuse_external_picam = True\nframe_width = 640\nframe_height = 480\njpeg_quality = 75\ndefault_layout = grid" >> config.ini
+        fi
     fi
 fi
 
 # Set up display for video (if not disabled)
-if [ $DISABLE_VIDEO -eq 0 ] && [ $HEADLESS_MODE -eq 0 ]; then
+if [ $DISABLE_VIDEO -eq 0 ]; then
     # Check if X server is already running
     if ! DISPLAY=:0 xset q &>/dev/null; then
-        echo "Starting minimal X server..."
+        echo "Starting X server with sudo..."
         
         # Kill any existing X servers to avoid conflicts
-        pkill X || true
+        sudo pkill X || true
         
-        # Start a minimal X server with no cursor
-        X :0 -nocursor &
+        # Check if we need to add the user to input/video groups
+        CURRENT_USER=$(whoami)
+        if ! groups $CURRENT_USER | grep -q "input"; then
+            echo "Adding user to input group for X server permissions"
+            sudo usermod -a -G input $CURRENT_USER
+        fi
+        
+        # Try to start X server with sudo
+        sudo X :0 -nocursor -keeptty -noreset &
         X_PID=$!
         
         # Wait for X to initialize
-        sleep 2
+        sleep 3
         
         if DISPLAY=:0 xset q &>/dev/null; then
             echo "✅ X server started successfully with PID: $X_PID"
             
-            # Export environment variables
+            # Export display environment variable
             export DISPLAY=:0
-            export XAUTHORITY=~/.Xauthority
+            
+            # Fix permissions for the X server
+            xhost +local:$CURRENT_USER
             
             # Disable screen blanking and power management
             xset s off
             xset -dpms
             xset s noblank
         else
-            echo "❌ Failed to start X server. Falling back to headless mode."
-            HEADLESS_MODE=1
+            echo "❌ Failed to start X server."
+            echo "You may need to run 'sudo raspi-config' and enable 'Boot to Desktop' or 'Console Autologin'"
+            echo "For now, continuing without display capabilities."
         fi
     else
         echo "✅ X server already running"
@@ -141,10 +153,6 @@ if [ $DISABLE_VIDEO -eq 1 ]; then
     ARGS="$ARGS --disable-video"
 fi
 
-if [ $HEADLESS_MODE -eq 1 ]; then
-    ARGS="$ARGS --headless"
-fi
-
 # Run with the assembled arguments
 if [ -n "$ARGS" ]; then
     python3 controller.py $ARGS
@@ -155,7 +163,7 @@ fi
 # Clean up X server if we started it
 if [ -n "$X_PID" ]; then
     echo "Stopping X server (PID: $X_PID)..."
-    kill $X_PID || true
+    sudo kill $X_PID || true
 fi
 
 # If the application exits, show a message

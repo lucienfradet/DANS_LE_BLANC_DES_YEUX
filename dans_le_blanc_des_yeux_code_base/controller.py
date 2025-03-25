@@ -11,6 +11,7 @@ import time
 import signal
 import sys
 import argparse
+import os
 from osc_handler import run_osc_handler
 from motor import MotorController  # Import the MotorController class
 from camera_manager import CameraManager  # Import the CameraManager class
@@ -110,11 +111,18 @@ if __name__ == "__main__":
                 except (ValueError, configparser.Error) as e:
                     print(f"Error reading video config: {e}. Using defaults.")
             
-            # Initialize camera manager
+            # Check if display is available
+            has_display = "DISPLAY" in os.environ and os.environ["DISPLAY"]
+            if not has_display:
+                print("WARNING: No display detected (DISPLAY environment variable not set)")
+                print("Video display component may not work properly")
+            
+            # Initialize enhanced camera manager with improved error handling
             print("Starting camera manager...")
             camera_manager = CameraManager(
                 internal_camera_id=video_params.get('internal_camera_id', 0),
-                external_picam=video_params.get('use_external_picam', True)
+                external_picam=video_params.get('use_external_picam', True),
+                disable_missing=True  # Continue even if cameras aren't available
             )
             if not camera_manager.start():
                 print("Warning: Failed to start camera manager. Video functionality may be limited.")
@@ -125,9 +133,16 @@ if __name__ == "__main__":
             video_streamer.start()
             
             # Initialize video display
-            print("Starting video display...")
-            video_display = VideoDisplay(video_streamer, camera_manager)
-            video_display.start()
+            if has_display:
+                print("Starting video display...")
+                try:
+                    video_display = VideoDisplay(video_streamer, camera_manager)
+                    video_display.start()
+                except Exception as e:
+                    print(f"Error starting video display: {e}")
+                    print("Video display functionality will be limited")
+            else:
+                print("Skipping video display initialization (no display available)")
         else:
             print("Video components disabled by command line argument")
         
