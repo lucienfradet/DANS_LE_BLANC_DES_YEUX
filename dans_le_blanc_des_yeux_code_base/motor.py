@@ -4,7 +4,7 @@ pressure has been false for more then a delay.
 """
 import threading
 import time
-from shared_variables import received_osc, local_osc
+from system_state import system_state
 
 class MotorController:
     def __init__(self, serial_connection, required_duration=1, check_interval=0.1):
@@ -13,9 +13,13 @@ class MotorController:
         self.check_interval = check_interval
         self.last_false_time = None
         self.thread = threading.Thread(target=self._monitor_pressure)
-        self.thread.daemon = True  # Ensures thread stops when the main program exits
+        self.thread.daemon = True
         self.running = False
         self.moving = False
+
+        # Register as an observer to get updates
+        system_state.add_observer(self._on_state_change)
+
 
     def start(self):
         self.running = True
@@ -25,24 +29,34 @@ class MotorController:
         self.running = False
         self.thread.join()
 
+    def _on_state_change(self, changed_state):
+        """Handle state changes."""
+        # Optional: React to specific state changes
+        pass
+
     def _monitor_pressure(self):
         while self.running:
-            if local_osc.get("pressure", True):  # Default to True if key is not present
+            # Get current states
+            local_state = system_state.get_local_state()
+            remote_state = system_state.get_remote_state()
+            
+            if local_state["pressure"]:
                 if self.last_false_time is None:
                     self.last_false_time = time.time()
                     print("pressure detected")
                 elif time.time() - self.last_false_time >= self.required_duration:
-                    # only move the motors if the other device is being used
                     print("pressure timer done")
-                    if not received_osc["pressure"] and local_osc["pressure"]:
-                        # print("sending serial to motors")
+                    if not remote_state["pressure"] and local_state["pressure"]:
                         self.moving = True
-                        self._trigger_motor({"y": received_osc["y"], "z": received_osc["z"]})  # Replace with dynamic data if needed
-                        self.last_false_time = None  # Reset timer after execution
+                        self._trigger_motor({
+                            "y": remote_state["y"], 
+                            "z": remote_state["z"]
+                        })
+                        self.last_false_time = None
             else:
                 self.moving = False
-                self.last_false_time = None  # Reset timer if "pressure" is True
-
+                self.last_false_time = None
+            
             time.sleep(self.check_interval)
 
     def _trigger_motor(self, data):
