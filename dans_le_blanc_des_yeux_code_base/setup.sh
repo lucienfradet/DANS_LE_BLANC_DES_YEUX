@@ -30,10 +30,37 @@ apt-get install -y \
   gstreamer1.0-libav \
   libgirepository1.0-dev \
   git \
-  arduino-cli \
-  libcamera-dev \
-  libcamera-apps \
-  gstreamer1.0-libcamera
+  arduino-cli
+
+# Install libcamera
+echo "Installing libcamera..."
+apt-get install -y \
+    libcamera-dev \
+    libcamera-apps \
+    gstreamer1.0-libcamera \
+    python3-libcamera
+
+# Install other dependencies for camera detection
+echo "Installing additional camera-related packages..."
+apt-get install -y \
+    v4l-utils \
+    ffmpeg \
+    python3-opencv \
+    python3-numpy \
+    python3-gi \
+    python3-gi-cairo \
+    gir1.2-gstreamer-1.0
+
+# Fix permissions for camera access
+echo "Setting up camera permissions..."
+usermod -a -G video $SUDO_USER
+
+# Copy the new camera_utils.py file
+echo "Installing the new camera utility files..."
+cp camera_utils.py /home/$SUDO_USER/CART461_PEOPLE_WATCHING/dans_le_blanc_des_yeux_code_base/
+
+# Fix ownership
+chown $SUDO_USER:$SUDO_USER /home/$SUDO_USER/CART461_PEOPLE_WATCHING/dans_le_blanc_des_yeux_code_base/camera_utils.py
 
 # Create a Python virtual environment (optional)
 echo "Creating Python virtual environment..."
