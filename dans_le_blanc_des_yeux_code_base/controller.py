@@ -3,7 +3,7 @@ Main controller for the Dans le Blanc des Yeux installation.
 Manages all components with proper error handling and cleanup.
 
 Usage:
-    python controller.py [--visualize]
+    python controller.py [--visualize] [--disable-video]
 """
 
 import configparser
@@ -13,6 +13,9 @@ import sys
 import argparse
 from osc_handler import run_osc_handler
 from motor import MotorController  # Import the MotorController class
+from camera_manager import CameraManager  # Import the CameraManager class
+from video_streamer import VideoStreamer  # Import the VideoStreamer class
+from video_display import VideoDisplay  # Import the VideoDisplay class
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -23,6 +26,12 @@ def signal_handler(sig, frame):
         serial_handler.disconnect()
     if 'motor_controller' in globals():  # Add motor controller cleanup
         motor_controller.stop()
+    if 'camera_manager' in globals():  # Add camera manager cleanup
+        camera_manager.stop()
+    if 'video_streamer' in globals():  # Add video streamer cleanup
+        video_streamer.stop()
+    if 'video_display' in globals():  # Add video display cleanup
+        video_display.stop()
     if 'visualizer' in globals() and visualizer is not None:
         visualizer.stop()
     print("Shutdown complete.")
@@ -32,6 +41,7 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Dans le Blanc des Yeux Controller')
     parser.add_argument('--visualize', action='store_true', help='Enable terminal visualization')
+    parser.add_argument('--disable-video', action='store_true', help='Disable video components')
     args = parser.parse_args()
     
     # Initialize visualizer variable
@@ -86,6 +96,40 @@ if __name__ == "__main__":
                 pass
                 
         motor_controller.start()
+        
+        # Initialize video components if not disabled
+        if not args.disable_video:
+            # Get video settings from config or use defaults
+            video_params = {}
+            if 'video' in config:
+                try:
+                    # Add any video-specific configuration here
+                    video_params['internal_camera_id'] = config.getint('video', 'internal_camera_id', fallback=0)
+                    video_params['use_external_picam'] = config.getboolean('video', 'use_external_picam', fallback=True)
+                    print(f"Using video settings from config: {video_params}")
+                except (ValueError, configparser.Error) as e:
+                    print(f"Error reading video config: {e}. Using defaults.")
+            
+            # Initialize camera manager
+            print("Starting camera manager...")
+            camera_manager = CameraManager(
+                internal_camera_id=video_params.get('internal_camera_id', 0),
+                external_picam=video_params.get('use_external_picam', True)
+            )
+            if not camera_manager.start():
+                print("Warning: Failed to start camera manager. Video functionality may be limited.")
+            
+            # Initialize video streamer
+            print("Starting video streamer...")
+            video_streamer = VideoStreamer(camera_manager, remote_ip)
+            video_streamer.start()
+            
+            # Initialize video display
+            print("Starting video display...")
+            video_display = VideoDisplay(video_streamer, camera_manager)
+            video_display.start()
+        else:
+            print("Video components disabled by command line argument")
         
         # Keep main thread alive
         print("System running. Press Ctrl+C to exit.")

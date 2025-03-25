@@ -1,21 +1,28 @@
 #!/bin/bash
 
 # Script to launch Dans le Blanc des Yeux art installation
-# Usage: ./run.sh [visual]
+# Usage: ./run.sh [visual] [disable-video]
 #   visual - Enable terminal visualization (optional)
+#   disable-video - Disable video components (optional)
 
 # Parse arguments
 ENABLE_VISUAL=0
+DISABLE_VIDEO=0
 for arg in "$@"
 do
     if [ "$arg" == "visual" ]; then
         ENABLE_VISUAL=1
         echo "Terminal visualization enabled"
     fi
+    if [ "$arg" == "disable-video" ]; then
+        DISABLE_VIDEO=1
+        echo "Video components disabled"
+    fi
 done
 
 # Export display variable for X11 forwarding if needed
-export DISPLAY=:1
+# Point to the physical display of the Raspberry Pi
+export DISPLAY=:0
 
 # Ensure we're in the right directory
 cd "$(dirname "$0")"
@@ -34,19 +41,22 @@ if ! command_exists python3; then
     exit 1
 fi
 
-# Check GStreamer
-if ! command_exists gst-launch-1.0; then
-    echo "Error: GStreamer is required but not installed."
-    echo "Please install with: sudo apt-get install gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly"
-    exit 1
-fi
-
 # Check OpenCV
 python3 -c "import cv2" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "Error: OpenCV for Python is required but not installed."
     echo "Please install with: pip3 install opencv-python"
     exit 1
+fi
+
+# Check if PiCamera2 is available when video is enabled
+if [ $DISABLE_VIDEO -eq 0 ]; then
+    python3 -c "from picamera2 import Picamera2" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "Warning: PiCamera2 module not found. External camera might not work."
+        echo "You can install it with: pip3 install picamera2"
+        # Continue anyway, internal camera might still work
+    fi
 fi
 
 # Install Python requirements
@@ -64,10 +74,42 @@ if [ ! -e "/dev/ttyACM0" ]; then
     fi
 fi
 
-# Start the application with or without visualization
+# Check for cameras if video is enabled
+if [ $DISABLE_VIDEO -eq 0 ]; then
+    echo "Checking camera devices..."
+    if command_exists v4l2-ctl; then
+        v4l2-ctl --list-devices
+    else
+        ls -l /dev/video*
+    fi
+fi
+
+# Set up the display before starting
+if [ $DISABLE_VIDEO -eq 0 ]; then
+    # Try to turn off screensaver and power saving
+    if command_exists xset; then
+        echo "Disabling screen blanking and power management..."
+        xset s off
+        xset -dpms
+        xset s noblank
+    fi
+fi
+
+# Start the application with appropriate arguments
 echo "Starting Dans le Blanc des Yeux..."
+ARGS=""
+
 if [ $ENABLE_VISUAL -eq 1 ]; then
-    python3 controller.py --visualize
+    ARGS="$ARGS --visualize"
+fi
+
+if [ $DISABLE_VIDEO -eq 1 ]; then
+    ARGS="$ARGS --disable-video"
+fi
+
+# Run with the assembled arguments
+if [ -n "$ARGS" ]; then
+    python3 controller.py $ARGS
 else
     python3 controller.py
 fi

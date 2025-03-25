@@ -137,7 +137,7 @@ class MotorController:
         try:
             # Format the message: Y,Z coordinates followed by newline
             message = f"{y_angle},{z_angle}\n"
-            print(f"Sending to Arduino: {message.strip()}")
+            # print(f"Sending to Arduino: {message.strip()}")
             
             # Send the message
             result = self.serial_connection.write(message)
