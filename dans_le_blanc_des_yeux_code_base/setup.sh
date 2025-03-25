@@ -38,8 +38,8 @@ su - $SUDO_USER -c "python3 -m venv ~/dans_le_blanc_des_yeux_env --system-site-p
 
 # Install Python packages
 echo "Installing Python packages..."
-su - $SUDO_USER -c "~/dans_le_blanc_env/bin/pip install -r $(pwd)/requirements.txt"
-su - $SUDO_USER -c "~/dans_le_blanc_env/bin/pip install opencv-python pythonosc pyserial numpy"
+su - $SUDO_USER -c "~/dans_le_blanc_des_yeux_env/bin/pip install -r $(pwd)/requirements.txt"
+su - $SUDO_USER -c "~/dans_le_blanc_des_yeux_env/bin/pip install opencv-python pythonosc pyserial numpy"
 
 # Configure auto-start
 echo "Setting up auto-start on boot..."
