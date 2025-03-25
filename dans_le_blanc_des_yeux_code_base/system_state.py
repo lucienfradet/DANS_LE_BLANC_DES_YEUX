@@ -29,13 +29,13 @@ class SystemState:
             "y": 0,
             "z": 0,
             "pressure": False,
-            "moving": False
+            "moving": False  # Track if motors are currently moving
         }
         
         self._remote_device = {
             "y": 0,
             "z": 0,
-            "pressure": True,
+            "pressure": False,
             "connected": False  # Track if remote device is connected
         }
         
@@ -59,27 +59,33 @@ class SystemState:
     def update_local_state(self, data: Dict[str, Any]) -> None:
         """Update the local device state."""
         with self._state_lock:
+            changed = False
             for key, value in data.items():
-                if key in self._local_device:
+                if key in self._local_device and self._local_device[key] != value:
                     self._local_device[key] = value
+                    changed = True
         
-        self._notify_observers("local")
+        if changed:
+            self._notify_observers("local")
     
     def update_remote_state(self, data: Dict[str, Any]) -> None:
         """Update the remote device state."""
         with self._state_lock:
+            changed = False
             for key, value in data.items():
-                if key in self._remote_device:
+                if key in self._remote_device and self._remote_device[key] != value:
                     self._remote_device[key] = value
+                    changed = True
         
-        self._notify_observers("remote")
+        if changed:
+            self._notify_observers("remote")
     
     def update_connection_status(self, connected: bool) -> None:
         """Update the connection status for the remote device."""
         with self._state_lock:
-            self._remote_device["connected"] = connected
-        
-        self._notify_observers("connection")
+            if self._remote_device["connected"] != connected:
+                self._remote_device["connected"] = connected
+                self._notify_observers("connection")
     
     def get_config(self) -> configparser.ConfigParser:
         """Get the configuration object."""

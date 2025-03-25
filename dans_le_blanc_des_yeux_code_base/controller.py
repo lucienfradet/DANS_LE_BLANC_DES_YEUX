@@ -12,6 +12,7 @@ import signal
 import sys
 import argparse
 from osc_handler import run_osc_handler
+from motor import MotorController  # Import the MotorController class
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -20,6 +21,8 @@ def signal_handler(sig, frame):
         osc_handler.stop()
     if 'serial_handler' in globals():
         serial_handler.disconnect()
+    if 'motor_controller' in globals():  # Add motor controller cleanup
+        motor_controller.stop()
     if 'visualizer' in globals() and visualizer is not None:
         visualizer.stop()
     print("Shutdown complete.")
@@ -55,6 +58,11 @@ if __name__ == "__main__":
         
         # Start OSC handler
         osc_handler, serial_handler = run_osc_handler(remote_ip)
+        
+        # Initialize and start motor controller
+        print("Starting motor controller...")
+        motor_controller = MotorController(serial_handler)
+        motor_controller.start()
         
         # Keep main thread alive
         print("System running. Press Ctrl+C to exit.")
