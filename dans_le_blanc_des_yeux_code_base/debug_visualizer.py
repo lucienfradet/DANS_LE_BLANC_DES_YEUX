@@ -18,6 +18,9 @@ class TerminalVisualizer:
         self.width = 80
         self.height = 24
         
+        # Track last movement commands
+        self.last_motor_command = {"y": 0, "z": 0, "timestamp": 0}
+        
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
         
@@ -48,6 +51,12 @@ class TerminalVisualizer:
     def _on_state_change(self, changed_state):
         """Handle state changes."""
         self.needs_redraw = True
+        
+        # Check if this is a motor movement update
+        if changed_state == "motor_command":
+            motor_cmd = system_state.get_last_motor_command()
+            if motor_cmd:
+                self.last_motor_command = motor_cmd.copy()
     
     def _display_loop(self):
         """Main display loop."""
@@ -121,6 +130,20 @@ class TerminalVisualizer:
         for i in range(len(local_viz)):
             print(f"{local_viz[i]} | {remote_viz[i]}")
         
+        # Motor Commands
+        print()
+        print("-" * self.width)
+        print("MOTOR COMMANDS".center(self.width))
+        
+        if self.last_motor_command["timestamp"] > 0:
+            elapsed = time.time() - self.last_motor_command["timestamp"]
+            if elapsed < 10:  # Only show recently sent commands
+                print(f"Last Command: Y={self.last_motor_command['y']}°, Z={self.last_motor_command['z']}° ({elapsed:.1f}s ago)".center(self.width))
+            else:
+                print("No recent motor commands".center(self.width))
+        else:
+            print("No motor commands sent yet".center(self.width))
+        
         # Connection status
         print()
         print("-" * self.width)
@@ -151,10 +174,11 @@ class TerminalVisualizer:
         pressure_color = "\033[91m" if pressure else "\033[92m"  # Red or Green
         lines.append(f"Pressure: {pressure_color}{pressure_text}\033[0m".ljust(half_width + 10))
         
-        # Moving status
+        # Moving status with color
         moving = state.get('moving', False)
-        moving_text = "MOVING" if moving else "IDLE"
-        lines.append(f"Motors: {moving_text}".ljust(half_width))
+        moving_text = "ACTIVE" if moving else "IDLE"
+        moving_color = "\033[93m" if moving else "\033[96m"  # Yellow or Cyan
+        lines.append(f"Motors: {moving_color}{moving_text}\033[0m".ljust(half_width + 10))
         
         return lines
     

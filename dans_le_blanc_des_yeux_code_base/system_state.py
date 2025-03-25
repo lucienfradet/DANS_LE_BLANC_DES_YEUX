@@ -39,6 +39,13 @@ class SystemState:
             "connected": False  # Track if remote device is connected
         }
         
+        # Store last motor command for visualization
+        self._last_motor_command = {
+            "y": 0,
+            "z": 0,
+            "timestamp": 0
+        }
+        
         # Configuration
         self._config = configparser.ConfigParser()
         self._config.read('config.ini')

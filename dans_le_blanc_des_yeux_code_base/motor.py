@@ -2,6 +2,11 @@
 This file monitors the system state and moves motors when appropriate.
 When a device detects the other device has pressure=true while it doesn't,
 it moves its motors to match the orientation of the pressured device.
+
+Usage:
+    from motor import MotorController
+    motor_controller = MotorController(serial_handler)
+    motor_controller.start()
 """
 import threading
 import time
@@ -141,6 +146,9 @@ class MotorController:
             if not result:
                 print("Failed to write to serial port")
                 return False
+                
+            # Update system state with the command that was sent
+            system_state.update_motor_command(y_angle, z_angle)
                 
             return True
         except Exception as e:
