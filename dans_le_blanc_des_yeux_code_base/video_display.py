@@ -27,9 +27,9 @@ class VideoDisplay:
         self.video_streamer = video_streamer
         self.camera_manager = camera_manager
         
-        # Display parameters
+        # Display parameters for Waveshare 7-inch display
         self.window_width = 1280
-        self.window_height = 720
+        self.window_height = 800
         
         # Set environment variable to ensure display on the physical screen
         # This helps when running over SSH
@@ -159,6 +159,60 @@ class VideoDisplay:
     def _on_external_frame_update(self, frame: np.ndarray) -> None:
         """Handle new external frame from remote device."""
         self.external_frame_updated.set()
+        
+    def _rotate_and_fit_frame(self, frame: np.ndarray, rotation_type: str, is_external: bool = False) -> np.ndarray:
+        """
+        Rotate frame and fit it to the display without stretching.
+        
+        Args:
+            frame: The input frame to process
+            rotation_type: Type of rotation ('90_clockwise', '180', etc.)
+            is_external: Whether this is the external camera feed
+            
+        Returns:
+            Processed frame that fits the display without stretching
+        """
+        if frame is None:
+            return None
+            
+        # Apply the appropriate rotation
+        if rotation_type == '90_clockwise' or (is_external and rotation_type == 'auto'):
+            # 90 degrees clockwise rotation for external camera
+            rotated = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        elif rotation_type == '180' or (not is_external and rotation_type == 'auto'):
+            # 180 degrees rotation for internal camera
+            rotated = cv2.rotate(frame, cv2.ROTATE_180)
+        else:
+            rotated = frame.copy()
+            
+        # Create a black background image with the size of the display
+        background = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
+        
+        # Calculate the aspect ratio of the rotated frame
+        h, w = rotated.shape[:2]
+        aspect_ratio = w / h
+        
+        # Calculate dimensions to maintain aspect ratio
+        if (self.window_width / self.window_height) > aspect_ratio:
+            # Window is wider than the frame's aspect ratio
+            new_height = self.window_height
+            new_width = int(new_height * aspect_ratio)
+        else:
+            # Window is taller than the frame's aspect ratio
+            new_width = self.window_width
+            new_height = int(new_width / aspect_ratio)
+            
+        # Resize the frame while maintaining aspect ratio
+        resized = cv2.resize(rotated, (new_width, new_height))
+        
+        # Calculate position to center the frame on the background
+        y_offset = (self.window_height - new_height) // 2
+        x_offset = (self.window_width - new_width) // 2
+        
+        # Place the resized frame on the black background
+        background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized
+        
+        return background
     
     def _display_loop(self) -> None:
         """Main display loop."""
@@ -210,8 +264,13 @@ class VideoDisplay:
                         if frame_counter % 100 == 0:
                             print(f"Displaying video frame {frame_counter}: {source_desc} ({frame.shape[1]}x{frame.shape[0]})")
                         
-                        # Resize the frame to fit our window exactly
-                        display_frame = cv2.resize(frame, (self.window_width, self.window_height))
+                        # Apply rotation and aspect ratio preservation based on camera type
+                        if "External" in source_desc:
+                            # External camera - 90 degrees clockwise rotation
+                            display_frame = self._rotate_and_fit_frame(frame, '90_clockwise', is_external=True)
+                        else:
+                            # Internal camera - 180 degrees rotation
+                            display_frame = self._rotate_and_fit_frame(frame, '180', is_external=False)
                         
                         # Add source label to the top-left corner
                         cv2.putText(display_frame, source_desc, (10, 30), 
