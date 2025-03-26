@@ -159,7 +159,7 @@ class TerminalVisualizer:
         
         # System instructions
         print()
-        print("Press Ctrl+C to exit, Ctrl+V to toggle visualizer".center(self.width))
+        print("Press Ctrl+C or q+Enter to exit, v+Enter to toggle visualizer".center(self.width))
     
     def _format_device_info(self, state: Dict[str, Any]) -> List[str]:
         """Format device state information as a list of lines."""

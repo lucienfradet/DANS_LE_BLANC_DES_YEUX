@@ -55,27 +55,15 @@ def input_monitor():
     while not stop_input_thread:
         try:
             # Read a single character
-            if os.name == 'nt':  # Windows
-                import msvcrt
-                if msvcrt.kbhit():
-                    key = msvcrt.getch().decode('utf-8').lower()
-                    if key == 'v':
-                        toggle_visualizer()
-                    elif key == 'q':
-                        print("\nQuitting application...")
-                        os.kill(os.getpid(), signal.SIGINT)
-                time.sleep(0.1)
-            else:  # Unix/Linux/Mac
-                # Use standard blocking input for SSH compatibility
-                key = input().lower().strip()
-                if key == 'v':
-                    toggle_visualizer()
-                elif key == 'q':
-                    print("\nQuitting application...")
-                    os.kill(os.getpid(), signal.SIGINT)
-                elif key:  # Any other command
-                    print(f"Unknown command: '{key}'")
-                    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+            key = input().lower().strip()
+            if key == 'v':
+                toggle_visualizer()
+            elif key == 'q':
+                print("\nQuitting application...")
+                os.kill(os.getpid(), signal.SIGINT)
+            elif key:  # Any other command
+                print(f"Unknown command: '{key}'")
+                print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
         except Exception as e:
             if not stop_input_thread:  # Only log errors if we're still supposed to be running
                 print(f"\nInput monitor error: {e}")
