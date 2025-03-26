@@ -85,31 +85,6 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     # Try to get PiCamera info using Python
     echo "Checking PiCamera with Python:"
     python3 -c "from picamera2 import Picamera2; print(f'Found {len(Picamera2.global_camera_info())} cameras'); print(Picamera2.global_camera_info())"
-    
-    # Update config.ini with appropriate camera information if needed
-    if [ -f "config.ini" ]; then
-        if ! grep -q "\[video\]" config.ini; then
-            echo "Adding Pi camera settings to config.ini"
-            # Use camera 0 for internal and camera 1 for external by default
-            echo -e "\n[video]\ninternal_camera_id = 0\nexternal_camera_id = 1\nframe_width = 640\nframe_height = 480\njpeg_quality = 75" >> config.ini
-        fi
-    fi
-    
-    # Replace camera_manager.py with Pi 5 specific version
-    echo "Installing Pi 5 specific camera manager..."
-    # Backup original if it doesn't exist
-    if [ ! -f camera_manager.py.orig ]; then
-        cp camera_manager.py camera_manager.py.orig
-    fi
-    cp pi5_camera_manager.py camera_manager.py
-    
-    # Replace video_display.py with fixed version
-    echo "Installing fixed video display..."
-    # Backup original if it doesn't exist
-    if [ ! -f video_display.py.orig ]; then
-        cp video_display.py video_display.py.orig
-    fi
-    cp fixed_video_display.py video_display.py
 fi
 
 # If video is enabled, set up X11 for Waveshare 7-inch display
@@ -172,22 +147,6 @@ fi
 export OPENCV_VIDEOIO_PRIORITY_MSMF=0       # Disable Microsoft Media Foundation
 export OPENCV_VIDEOIO_PRIORITY_INTEL_MFX=0  # Disable Intel Media SDK
 export OPENCV_FFMPEG_LOGLEVEL=0             # Disable FFMPEG logging
-
-# Update controller.py to use the correct parameters for CameraManager
-if [ -f controller.py ]; then
-    echo "Updating controller.py to use correct camera parameters..."
-    
-    # Backup controller.py if not already backed up
-    if [ ! -f controller.py.orig ]; then
-        cp controller.py controller.py.orig
-    fi
-    
-    # Update CameraManager initialization to use external_camera_id instead of use_external_picam
-    sed -i 's/camera_manager = CameraManager(.*)/camera_manager = CameraManager(\n                internal_camera_id=video_params.get("internal_camera_id", 0),\n                external_camera_id=video_params.get("external_camera_id", 1),\n                disable_missing=True\n            )/' controller.py
-    
-    # Update video parameter reading
-    sed -i 's/video_params\["use_external_picam"\] = config.getboolean/video_params["external_camera_id"] = config.getint/g' controller.py
-fi
 
 # Start the application with appropriate arguments
 echo "Starting Dans le Blanc des Yeux..."
