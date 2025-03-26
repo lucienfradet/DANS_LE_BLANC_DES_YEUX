@@ -106,7 +106,7 @@ if __name__ == "__main__":
                 try:
                     # Add any video-specific configuration here
                     video_params['internal_camera_id'] = config.getint('video', 'internal_camera_id', fallback=0)
-                    video_params['use_external_picam'] = config.getboolean('video', 'use_external_picam', fallback=True)
+                    video_params['external_camera_id'] = config.getint('video', 'external_camera_id', fallback=1)
                     print(f"Using video settings from config: {video_params}")
                 except (ValueError, configparser.Error) as e:
                     print(f"Error reading video config: {e}. Using defaults.")
@@ -121,9 +121,8 @@ if __name__ == "__main__":
             print("Starting camera manager...")
             camera_manager = CameraManager(
                 internal_camera_id=video_params.get('internal_camera_id', 0),
-                external_picam=video_params.get('use_external_picam', True),
-                disable_missing=True,  # Continue even if cameras aren't available
-                swap_cameras=True
+                external_camera_id=video_params.get('external_camera_id', 1),
+                disable_missing=True  # Continue even if cameras aren't available
             )
             if not camera_manager.start():
                 print("Warning: Failed to start camera manager. Video functionality may be limited.")
