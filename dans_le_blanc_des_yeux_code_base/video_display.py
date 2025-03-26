@@ -14,6 +14,7 @@ import time
 import threading
 import cv2
 import numpy as np
+import configparser
 from typing import Dict, Optional, Tuple, List
 
 from system_state import system_state
@@ -30,6 +31,13 @@ class VideoDisplay:
         # Display parameters for Waveshare 7-inch display
         self.window_width = 1280
         self.window_height = 800
+        
+        # Default rotation settings (will be overridden by config if available)
+        self.internal_rotation = '0'  # No rotation by default
+        self.external_rotation = '90_counter'  # 90 degrees counterclockwise by default
+        
+        # Load rotation settings from config.ini
+        self._load_config()
         
         # Set environment variable to ensure display on the physical screen
         # This helps when running over SSH
@@ -55,6 +63,65 @@ class VideoDisplay:
         self.external_frame_updated = threading.Event()
         
         print("Video display initialized")
+        print(f"Using rotations - Internal: {self.internal_rotation}, External: {self.external_rotation}")
+    
+    def _load_config(self):
+        """Load display settings from config.ini"""
+        try:
+            config = configparser.ConfigParser()
+            config.read('config.ini')
+            
+            if 'video' in config:
+                # Read internal camera rotation setting
+                if 'internal_rotation' in config['video']:
+                    self.internal_rotation = config['video']['internal_rotation']
+                    
+                # Read external camera rotation setting
+                if 'external_rotation' in config['video']:
+                    self.external_rotation = config['video']['external_rotation']
+                    
+                # Read display dimensions if specified
+                if 'display_width' in config['video']:
+                    self.window_width = config.getint('video', 'display_width', fallback=1280)
+                if 'display_height' in config['video']:
+                    self.window_height = config.getint('video', 'display_height', fallback=800)
+                    
+                print(f"Loaded display settings from config.ini")
+            else:
+                print("No [video] section found in config.ini, using default settings")
+                # Add default rotation settings to config
+                self._add_default_config_settings(config)
+                
+        except Exception as e:
+            print(f"Error loading config: {e}")
+            print("Using default rotation settings")
+    
+    def _add_default_config_settings(self, config):
+        """Add default rotation settings to config.ini if not present"""
+        try:
+            if 'video' not in config:
+                config['video'] = {}
+            
+            # Only add settings if they don't exist
+            if 'internal_rotation' not in config['video']:
+                config['video']['internal_rotation'] = self.internal_rotation
+            if 'external_rotation' not in config['video']:
+                config['video']['external_rotation'] = self.external_rotation
+            if 'display_width' not in config['video']:
+                config['video']['display_width'] = str(self.window_width)
+            if 'display_height' not in config['video']:
+                config['video']['display_height'] = str(self.window_height)
+                
+            # Add rotation options as comments
+            config['video']['# Rotation options'] = '0, 90_clockwise, 90_counter, 180'
+            
+            # Write to config file
+            with open('config.ini', 'w') as configfile:
+                config.write(configfile)
+                
+            print("Added default rotation settings to config.ini")
+        except Exception as e:
+            print(f"Error adding default settings to config: {e}")
     
     def start(self) -> bool:
         """Start the video display system."""
@@ -166,7 +233,7 @@ class VideoDisplay:
         
         Args:
             frame: The input frame to process
-            rotation_type: Type of rotation ('90_clockwise', '180', etc.)
+            rotation_type: Type of rotation ('90_clockwise', '90_counter', '180', '0')
             is_external: Whether this is the external camera feed
             
         Returns:
@@ -177,44 +244,18 @@ class VideoDisplay:
             
         # Apply the appropriate rotation
         if rotation_type == '90_clockwise':
-            # 90 degrees clockwise rotation for external camera
+            # 90 degrees clockwise rotation
             rotated = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
         elif rotation_type == '90_counter':
+            # 90 degrees counter-clockwise rotation
             rotated = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
         elif rotation_type == '180':
-            # 180 degrees rotation for internal camera
+            # 180 degrees rotation
             rotated = cv2.rotate(frame, cv2.ROTATE_180)
         else:
+            # No rotation (or invalid rotation type)
             rotated = frame.copy()
             
-        # # Create a black background image with the size of the display
-        # background = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
-        # 
-        # # Calculate the aspect ratio of the rotated frame
-        # h, w = rotated.shape[:2]
-        # aspect_ratio = w / h
-        # 
-        # # Calculate dimensions to maintain aspect ratio
-        # if (self.window_width / self.window_height) > aspect_ratio:
-        #     # Window is wider than the frame's aspect ratio
-        #     new_height = self.window_height
-        #     new_width = int(new_height * aspect_ratio)
-        # else:
-        #     # Window is taller than the frame's aspect ratio
-        #     new_width = self.window_width
-        #     new_height = int(new_width / aspect_ratio)
-        #     
-        # # Resize the frame while maintaining aspect ratio
-        # resized = cv2.resize(rotated, (new_width, new_height))
-        # 
-        # # Calculate position to center the frame on the background
-        # y_offset = (self.window_height - new_height) // 2
-        # x_offset = (self.window_width - new_width) // 2
-        # 
-        # # Place the resized frame on the black background
-        # background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized
-        # 
-        # return background
         return rotated
     
     def _display_loop(self) -> None:
@@ -267,17 +308,19 @@ class VideoDisplay:
                         if frame_counter % 100 == 0:
                             print(f"Displaying video frame {frame_counter}: {source_desc} ({frame.shape[1]}x{frame.shape[0]})")
                         
-                        # Apply rotation and aspect ratio preservation based on camera type
+                        # Apply rotation based on camera type using config settings
                         if "External" in source_desc:
-                            # External camera - 90 degrees clockwise rotation
-                            display_frame = self._rotate_and_fit_frame(frame, '90_counter', is_external=True)
+                            # External camera - use config setting
+                            display_frame = self._rotate_and_fit_frame(frame, self.external_rotation, is_external=True)
+                            rotation_text = f"External ({self.external_rotation})"
                         else:
-                            # Internal camera - 180 degrees rotation
-                            display_frame = self._rotate_and_fit_frame(frame, '0', is_external=False)
+                            # Internal camera - use config setting
+                            display_frame = self._rotate_and_fit_frame(frame, self.internal_rotation, is_external=False)
+                            rotation_text = f"Internal ({self.internal_rotation})"
                         
-                        # Add source label to the top-left corner
-                        cv2.putText(display_frame, source_desc, (10, 30), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        # Add source label and rotation info to the top-left corner
+                        cv2.putText(display_frame, f"{source_desc} - {rotation_text}", (10, 30), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                     else:
                         # Use a completely black frame
                         display_frame = black_frame.copy()
@@ -285,7 +328,7 @@ class VideoDisplay:
                         # Add explanation text only if there's something to explain
                         if source_desc:
                             cv2.putText(display_frame, source_desc, (10, 30), 
-                                      cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                     
                     # Show display if available
                     if display_available:

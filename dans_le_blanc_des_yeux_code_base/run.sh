@@ -112,8 +112,10 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     cp fixed_video_display.py video_display.py
 fi
 
-# If video is enabled, set up X11
+# If video is enabled, set up X11 for Waveshare 7-inch display
 if [ $DISABLE_VIDEO -eq 0 ]; then
+    echo "Setting up X server for Waveshare 7-inch display (1280x800)..."
+    
     # Kill any existing X servers to avoid conflicts
     if [ "$(id -u)" -eq 0 ]; then
         pkill X || true
@@ -131,6 +133,7 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     X_PID=$!
     
     # Wait for X to initialize
+    echo "Waiting for X server to initialize..."
     sleep 3
     
     # Set up environment
@@ -145,15 +148,24 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     xset -dpms
     xset s noblank
     
+    # Set environment variables for Waveshare display dimensions
+    export WAVESHARE_WIDTH=1280
+    export WAVESHARE_HEIGHT=800
+    
     # Try to start a minimal window manager (if available)
     # This helps ensure we get true fullscreen with no decorations
     if command_exists openbox; then
+        echo "Starting openbox with no decorations..."
         openbox --config-file <(echo '<?xml version="1.0" encoding="UTF-8"?><openbox_config xmlns="http://openbox.org/3.4/rc"><applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications></openbox_config>') &
-        echo "Started openbox with no decorations"
     elif command_exists matchbox-window-manager; then
+        echo "Starting matchbox with no decorations..."
         matchbox-window-manager -use_titlebar no &
-        echo "Started matchbox with no decorations"
     fi
+    
+    # Configure rotation of display if needed (uncomment if required)
+    # xrandr --output HDMI-1 --rotate normal
+    
+    echo "X server is ready for display"
 fi
 
 # Set OpenCV performance optimization variables
