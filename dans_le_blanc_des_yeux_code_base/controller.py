@@ -12,11 +12,34 @@ import signal
 import sys
 import argparse
 import os
+import keyboard  # Import keyboard module for handling keyboard shortcuts
 from osc_handler import run_osc_handler
 from motor import MotorController  # Import the MotorController class
 from camera_manager import CameraManager  # Import the CameraManager class
 from video_streamer import VideoStreamer  # Import the VideoStreamer class
 from video_display import VideoDisplay  # Import the VideoDisplay class
+from debug_visualizer import TerminalVisualizer, run_visualizer  # Import visualizer directly
+
+# Global visualizer instance that can be toggled
+visualizer = None
+visualizer_active = False
+
+def toggle_visualizer():
+    """Toggle the visualizer on/off"""
+    global visualizer, visualizer_active
+    
+    if visualizer is None:
+        # Initialize visualizer if it doesn't exist
+        visualizer = TerminalVisualizer()
+    
+    if visualizer_active:
+        print("Toggling visualizer OFF")
+        visualizer.stop()
+        visualizer_active = False
+    else:
+        print("Toggling visualizer ON")
+        visualizer.start()
+        visualizer_active = True
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
@@ -33,8 +56,12 @@ def signal_handler(sig, frame):
         video_streamer.stop()
     if 'video_display' in globals():  # Add video display cleanup
         video_display.stop()
-    if 'visualizer' in globals() and visualizer is not None:
+    
+    # Stop visualizer if it's running
+    global visualizer, visualizer_active
+    if visualizer is not None and visualizer_active:
         visualizer.stop()
+    
     print("Shutdown complete.")
     sys.exit(0)
 
@@ -44,9 +71,6 @@ if __name__ == "__main__":
     parser.add_argument('--visualize', action='store_true', help='Enable terminal visualization')
     parser.add_argument('--disable-video', action='store_true', help='Disable video components')
     args = parser.parse_args()
-    
-    # Initialize visualizer variable
-    visualizer = None
     
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -61,11 +85,18 @@ if __name__ == "__main__":
         remote_ip = config['ip']['pi-ip']
         print(f"Using remote IP: {remote_ip}")
         
-        # Start visualizer if requested
+        # Initialize visualizer but only start if requested via command line
+        visualizer = TerminalVisualizer()
+        visualizer_active = False
+        
         if args.visualize:
-            from debug_visualizer import run_visualizer
             print("Starting terminal visualizer...")
-            visualizer = run_visualizer()
+            visualizer.start()
+            visualizer_active = True
+        
+        # Register keyboard shortcut for toggling visualizer
+        keyboard.add_hotkey('ctrl+v', toggle_visualizer)
+        print("Press Ctrl+V to toggle visualizer on/off")
         
         # Start OSC handler
         osc_handler, serial_handler = run_osc_handler(remote_ip)

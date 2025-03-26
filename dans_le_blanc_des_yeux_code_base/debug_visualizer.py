@@ -32,6 +32,9 @@ class TerminalVisualizer:
         if self.thread is not None and self.thread.is_alive():
             print("Visualization already running")
             return self
+        
+        # Clear screen before starting
+        os.system('clear' if os.name == 'posix' else 'cls')
             
         self.running = True
         self.thread = threading.Thread(target=self._display_loop)
@@ -44,6 +47,7 @@ class TerminalVisualizer:
         self.running = False
         if self.thread is not None:
             self.thread.join(timeout=1.0)
+            self.thread = None  # Reset thread to None to allow restart
         
         # Clear screen on exit
         os.system('clear' if os.name == 'posix' else 'cls')
@@ -155,7 +159,7 @@ class TerminalVisualizer:
         
         # System instructions
         print()
-        print("Press Ctrl+C to exit".center(self.width))
+        print("Press Ctrl+C to exit, Ctrl+V to toggle visualizer".center(self.width))
     
     def _format_device_info(self, state: Dict[str, Any]) -> List[str]:
         """Format device state information as a list of lines."""

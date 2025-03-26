@@ -60,6 +60,15 @@ pip3 install -r requirements.txt
 # Make sure picamera2 is installed
 pip3 install picamera2
 
+# Make sure keyboard module is installed
+pip3 install keyboard
+
+# Install keyboard with sudo for root-level key monitoring
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Installing keyboard module with sudo for system-wide keyboard monitoring..."
+    sudo pip3 install keyboard
+fi
+
 # Check if Arduino is connected
 if [ ! -e "/dev/ttyACM0" ]; then
     echo "Warning: Arduino device not found at /dev/ttyACM0"
@@ -179,6 +188,7 @@ fi
 
 # Start the application with appropriate arguments
 echo "Starting Dans le Blanc des Yeux..."
+echo "Note: Press Ctrl+V to toggle the visualizer on/off during runtime"
 
 # Set up arguments
 ARGS=""
@@ -196,11 +206,12 @@ if [ $DISABLE_VIDEO -eq 1 ]; then
     ARGS="$ARGS --disable-video"
 fi
 
-# Run the application
-if [ -n "$ARGS" ]; then
-    python3 controller.py $ARGS
+# Run the application with root privileges for keyboard access
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Running controller with sudo for keyboard shortcut access..."
+    sudo python3 controller.py $ARGS
 else
-    python3 controller.py
+    python3 controller.py $ARGS
 fi
 
 # Clean up X server if we started it
