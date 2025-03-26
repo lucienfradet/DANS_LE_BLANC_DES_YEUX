@@ -122,7 +122,8 @@ if __name__ == "__main__":
             camera_manager = CameraManager(
                 internal_camera_id=video_params.get('internal_camera_id', 0),
                 external_picam=video_params.get('use_external_picam', True),
-                disable_missing=True  # Continue even if cameras aren't available
+                disable_missing=True,  # Continue even if cameras aren't available
+                swap_cameras=True
             )
             if not camera_manager.start():
                 print("Warning: Failed to start camera manager. Video functionality may be limited.")
