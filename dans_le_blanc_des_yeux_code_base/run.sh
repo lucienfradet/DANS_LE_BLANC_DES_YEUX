@@ -41,7 +41,7 @@ fi
 python3 -c "import cv2" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "Error: OpenCV for Python is required but not installed."
-    echo "Please install with: pip3 install opencv-python"
+    echo "Please install with: sudo apt install python3-opencv"
     exit 1
 fi
 
@@ -49,25 +49,16 @@ fi
 python3 -c "from picamera2 import Picamera2" 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "Error: PiCamera2 module is required but not installed."
-    echo "Please install with: pip3 install picamera2"
+    echo "Please install with: sudo apt install python3-picamera2"
     exit 1
 fi
 
-# Install Python requirements
+# Install Python requirements using apt where possible
 echo "Installing Python requirements..."
-pip3 install -r requirements.txt
+sudo apt install -y python3-pip python3-numpy python3-serial python3-opencv
 
-# Make sure picamera2 is installed
-pip3 install picamera2
-
-# Make sure keyboard module is installed
-pip3 install keyboard
-
-# Install keyboard with sudo for root-level key monitoring
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Installing keyboard module with sudo for system-wide keyboard monitoring..."
-    sudo pip3 install keyboard
-fi
+# For packages not available via apt, use pip with requirements file
+pip3 install -r requirements.txt 2>/dev/null || echo "Some pip packages may not have installed. This is okay if they're available via apt."
 
 # Check if Arduino is connected
 if [ ! -e "/dev/ttyACM0" ]; then
@@ -188,7 +179,10 @@ fi
 
 # Start the application with appropriate arguments
 echo "Starting Dans le Blanc des Yeux..."
-echo "Note: Press Ctrl+V to toggle the visualizer on/off during runtime"
+echo "Console commands available:"
+echo "- Type 'v' and press Enter to toggle the visualizer on/off"
+echo "- Type 'q' and press Enter to quit the application"
+echo "- Press Ctrl+C to stop the application"
 
 # Set up arguments
 ARGS=""
@@ -206,13 +200,8 @@ if [ $DISABLE_VIDEO -eq 1 ]; then
     ARGS="$ARGS --disable-video"
 fi
 
-# Run the application with root privileges for keyboard access
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Running controller with sudo for keyboard shortcut access..."
-    sudo python3 controller.py $ARGS
-else
-    python3 controller.py $ARGS
-fi
+# Run the application
+python3 controller.py $ARGS
 
 # Clean up X server if we started it
 if [ -n "$X_PID" ]; then

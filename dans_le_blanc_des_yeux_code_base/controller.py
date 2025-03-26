@@ -1,6 +1,6 @@
 """
 Main controller for the Dans le Blanc des Yeux installation.
-Manages all components with proper error handling and cleanup.
+Uses SSH console input to toggle the visualizer.
 
 Usage:
     python controller.py [--visualize] [--disable-video]
@@ -12,17 +12,18 @@ import signal
 import sys
 import argparse
 import os
-import keyboard  # Import keyboard module for handling keyboard shortcuts
+import threading
 from osc_handler import run_osc_handler
-from motor import MotorController  # Import the MotorController class
-from camera_manager import CameraManager  # Import the CameraManager class
-from video_streamer import VideoStreamer  # Import the VideoStreamer class
-from video_display import VideoDisplay  # Import the VideoDisplay class
-from debug_visualizer import TerminalVisualizer, run_visualizer  # Import visualizer directly
+from motor import MotorController
+from camera_manager import CameraManager
+from video_streamer import VideoStreamer
+from video_display import VideoDisplay
+from debug_visualizer import TerminalVisualizer
 
-# Global visualizer instance that can be toggled
+# Global variables
 visualizer = None
 visualizer_active = False
+stop_input_thread = False
 
 def toggle_visualizer():
     """Toggle the visualizer on/off"""
@@ -33,28 +34,71 @@ def toggle_visualizer():
         visualizer = TerminalVisualizer()
     
     if visualizer_active:
-        print("Toggling visualizer OFF")
+        print("\nToggling visualizer OFF")
         visualizer.stop()
         visualizer_active = False
     else:
-        print("Toggling visualizer ON")
+        print("\nToggling visualizer ON")
         visualizer.start()
         visualizer_active = True
+    
+    # Print prompt again to make it clear we're waiting for input
+    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+
+def input_monitor():
+    """Thread that monitors for user input to toggle visualizer"""
+    global stop_input_thread
+    
+    print("\nCommand prompt ready. Type and press Enter:")
+    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+    
+    while not stop_input_thread:
+        try:
+            # Read a single character
+            if os.name == 'nt':  # Windows
+                import msvcrt
+                if msvcrt.kbhit():
+                    key = msvcrt.getch().decode('utf-8').lower()
+                    if key == 'v':
+                        toggle_visualizer()
+                    elif key == 'q':
+                        print("\nQuitting application...")
+                        os.kill(os.getpid(), signal.SIGINT)
+                time.sleep(0.1)
+            else:  # Unix/Linux/Mac
+                # Use standard blocking input for SSH compatibility
+                key = input().lower().strip()
+                if key == 'v':
+                    toggle_visualizer()
+                elif key == 'q':
+                    print("\nQuitting application...")
+                    os.kill(os.getpid(), signal.SIGINT)
+                elif key:  # Any other command
+                    print(f"Unknown command: '{key}'")
+                    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+        except Exception as e:
+            if not stop_input_thread:  # Only log errors if we're still supposed to be running
+                print(f"\nInput monitor error: {e}")
+            time.sleep(0.5)
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully."""
+    global stop_input_thread
     print("\nShutting down... Please wait.")
+    stop_input_thread = True
+    
+    # Stop all components
     if 'osc_handler' in globals():
         osc_handler.stop()
     if 'serial_handler' in globals():
         serial_handler.disconnect()
-    if 'motor_controller' in globals():  # Add motor controller cleanup
+    if 'motor_controller' in globals():
         motor_controller.stop()
-    if 'camera_manager' in globals():  # Add camera manager cleanup
+    if 'camera_manager' in globals():
         camera_manager.stop()
-    if 'video_streamer' in globals():  # Add video streamer cleanup
+    if 'video_streamer' in globals():
         video_streamer.stop()
-    if 'video_display' in globals():  # Add video display cleanup
+    if 'video_display' in globals():
         video_display.stop()
     
     # Stop visualizer if it's running
@@ -94,9 +138,10 @@ if __name__ == "__main__":
             visualizer.start()
             visualizer_active = True
         
-        # Register keyboard shortcut for toggling visualizer
-        keyboard.add_hotkey('ctrl+v', toggle_visualizer)
-        print("Press Ctrl+V to toggle visualizer on/off")
+        # Start input monitor thread
+        input_thread = threading.Thread(target=input_monitor)
+        input_thread.daemon = True
+        input_thread.start()
         
         # Start OSC handler
         osc_handler, serial_handler = run_osc_handler(remote_ip)
@@ -177,8 +222,7 @@ if __name__ == "__main__":
         else:
             print("Video components disabled by command line argument")
         
-        # Keep main thread alive
-        print("System running. Press Ctrl+C to exit.")
+        # Keep main thread alive while the input thread handles commands
         while True:
             time.sleep(1)
             
