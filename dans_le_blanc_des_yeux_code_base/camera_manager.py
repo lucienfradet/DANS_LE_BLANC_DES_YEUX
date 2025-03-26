@@ -1,13 +1,12 @@
 """
-Camera manager for the Dans le Blanc des Yeux installation.
-Specifically designed for Raspberry Pi 5 with two dedicated ribbon-cable cameras.
+Raspberry Pi Camera Manager for the Dans le Blanc des Yeux installation.
+Specifically designed for Pi 5 with dedicated ribbon-cable cameras.
 """
 
 import time
 import threading
 import cv2
 import numpy as np
-import subprocess
 from typing import Dict, Optional, Tuple, List
 
 class CameraManager:
@@ -43,7 +42,7 @@ class CameraManager:
         # If only one camera works, we'll use it for both roles
         self.use_same_camera_for_both = False
         
-        print("Pi 5 Camera manager initialized")
+        print("Pi Camera manager initialized")
     
     def _create_test_frames(self):
         """Create test pattern frames for when cameras are unavailable."""
@@ -79,7 +78,7 @@ class CameraManager:
     
     def start(self) -> bool:
         """Initialize and start all cameras."""
-        print("Starting Pi 5 camera manager...")
+        print("Starting Pi camera manager...")
         self.running = True
         
         try:

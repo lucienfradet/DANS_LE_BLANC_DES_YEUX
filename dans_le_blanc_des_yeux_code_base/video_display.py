@@ -1,6 +1,12 @@
 """
-Fixed video display module for the Dans le Blanc des Yeux installation.
-Includes proper fullscreen handling and enhanced display code.
+Video display module for the Dans le Blanc des Yeux installation.
+Handles displaying video streams based on pressure state.
+
+Logic:
+1. No pressure on either device: Display nothing (black screen)
+2. Local pressure: Display remote external camera video
+3. Remote pressure: Display nothing
+4. Both have pressure: Display remote internal camera video
 """
 
 import os
@@ -8,7 +14,6 @@ import time
 import threading
 import cv2
 import numpy as np
-import subprocess
 from typing import Dict, Optional, Tuple, List
 
 from system_state import system_state
@@ -63,24 +68,7 @@ class VideoDisplay:
             # Create window with specific flags
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
             
-            # Get screen resolution
-            try:
-                # Try to get screen size using alternative method
-                output = subprocess.check_output(['xrandr'], universal_newlines=True)
-                for line in output.splitlines():
-                    if ' connected' in line and 'primary' in line:
-                        # Find the resolution in the line
-                        res_start = line.find(' primary ') + 9  # Skip past "primary"
-                        resolution = line[res_start:].split()[0]
-                        width, height = map(int, resolution.split('x'))
-                        self.window_width = width
-                        self.window_height = height
-                        print(f"Detected screen resolution: {width}x{height}")
-                        break
-            except Exception as e:
-                print(f"Could not detect screen resolution: {e}, using defaults")
-            
-            # Set window size to exact screen size
+            # Set window size to match screen size
             cv2.resizeWindow(self.window_name, self.window_width, self.window_height)
             
             # Set window position to top-left corner
@@ -91,10 +79,10 @@ class VideoDisplay:
             cv2.imshow(self.window_name, black_frame)
             cv2.waitKey(1)
             
-            # IMPORTANT: Set fullscreen AFTER showing the window
+            # Set fullscreen AFTER showing the window
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             
-            # Also try to set window to stay on top to prevent it from being covered
+            # Try to set window to stay on top
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_TOPMOST, 1)
             
             # Wait a moment for window to settle
@@ -145,17 +133,24 @@ class VideoDisplay:
         local_state = system_state.get_local_state()
         remote_state = system_state.get_remote_state()
         
-        # Case 1: Local has pressure, display remote external camera
-        if local_state.get("pressure", False):
-            if remote_state.get("pressure", False):
-                # Both have pressure: show remote internal camera
-                return (True, "Remote Internal Camera", self.video_streamer.get_received_internal_frame())
-            else:
-                # Only local has pressure: show remote external camera
-                return (True, "Remote External Camera", self.video_streamer.get_received_external_frame())
-        
-        # Case 2: No local pressure, don't show anything
-        return (False, "No Display (No Local Pressure)", None)
+        # No pressure on either device: Display nothing (black screen)
+        if not local_state.get("pressure", False) and not remote_state.get("pressure", False):
+            return (False, "No Display (No Pressure)", None)
+            
+        # Local pressure: Display remote external camera video
+        elif local_state.get("pressure", False) and not remote_state.get("pressure", False):
+            return (True, "Remote External Camera", self.video_streamer.get_received_external_frame())
+            
+        # Remote pressure: Display nothing
+        elif not local_state.get("pressure", False) and remote_state.get("pressure", False):
+            return (False, "No Display (Remote Pressure)", None)
+            
+        # Both have pressure: Display remote internal camera video
+        elif local_state.get("pressure", False) and remote_state.get("pressure", False):
+            return (True, "Remote Internal Camera", self.video_streamer.get_received_internal_frame())
+            
+        # Default case
+        return (False, "No Display (Default)", None)
     
     def _on_internal_frame_update(self, frame: np.ndarray) -> None:
         """Handle new internal frame from remote device."""
@@ -257,66 +252,3 @@ class VideoDisplay:
             if display_available:
                 cv2.destroyAllWindows()
             print("Display loop stopped")
-
-
-# Test function to run the video display standalone
-def test_video_display():
-    """Test the video display with camera manager and video streamer."""
-    from camera_manager import CameraManager
-    from video_streamer import VideoStreamer
-    
-    # Initialize system state with no pressure
-    system_state.update_local_state({"pressure": False})
-    system_state.update_remote_state({"pressure": False, "connected": True})
-    
-    # Initialize camera manager
-    camera_manager = CameraManager()
-    if not camera_manager.start():
-        print("Failed to start camera manager")
-        return
-    
-    # Initialize video streamer with loopback address for testing
-    video_streamer = VideoStreamer(camera_manager, "127.0.0.1")
-    video_streamer.start()
-    
-    # Initialize video display
-    video_display = VideoDisplay(video_streamer, camera_manager)
-    video_display.start()
-    
-    try:
-        # Test different pressure states
-        print("\nTesting default state (no pressure)...")
-        time.sleep(3)
-        
-        print("\nTesting local pressure (should show remote external camera)...")
-        system_state.update_local_state({"pressure": True})
-        time.sleep(3)
-        
-        print("\nTesting remote pressure (should show nothing)...")
-        system_state.update_local_state({"pressure": False})
-        system_state.update_remote_state({"pressure": True})
-        time.sleep(3)
-        
-        print("\nTesting both have pressure (should show remote internal camera)...")
-        system_state.update_local_state({"pressure": True})
-        time.sleep(3)
-        
-        # Return to normal state
-        system_state.update_local_state({"pressure": False})
-        system_state.update_remote_state({"pressure": False})
-        
-        print("\nTest complete. Press Ctrl+C to exit.")
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Test interrupted by user")
-    finally:
-        # Clean up
-        video_display.stop()
-        video_streamer.stop()
-        camera_manager.stop()
-
-
-# Run test if executed directly
-if __name__ == "__main__":
-    test_video_display()
