@@ -1,15 +1,13 @@
 #!/bin/bash
 
-# Script to launch Dans le Blanc des Yeux art installation for Pi 5 with ribbon cameras
-# Usage: ./run.sh [visual] [disable-video] [framebuffer]
+# Script to launch Dans le Blanc des Yeux art installation
+# Usage: ./run.sh [visual] [disable-video]
 #   visual - Enable terminal visualization (optional)
 #   disable-video - Disable video components (optional)
-#   framebuffer - Use direct framebuffer for display instead of X11 (optional)
 
 # Parse arguments
 ENABLE_VISUAL=0
 DISABLE_VIDEO=0
-USE_FRAMEBUFFER=0
 for arg in "$@"
 do
     if [ "$arg" == "visual" ]; then
@@ -19,10 +17,6 @@ do
     if [ "$arg" == "disable-video" ]; then
         DISABLE_VIDEO=1
         echo "Video components disabled"
-    fi
-    if [ "$arg" == "framebuffer" ]; then
-        USE_FRAMEBUFFER=1
-        echo "Using framebuffer display instead of X11"
     fi
 done
 
@@ -51,25 +45,9 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Check PiCamera2
-python3 -c "from picamera2 import Picamera2" 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo "Error: PiCamera2 module is required but not installed."
-    echo "Please install with: pip3 install picamera2"
-    exit 1
-fi
-
 # Install Python requirements
 echo "Installing Python requirements..."
 pip3 install -r requirements.txt
-
-# Make sure picamera2 is installed
-pip3 install picamera2
-
-# If framebuffer mode, make sure PIL is installed
-if [ $USE_FRAMEBUFFER -eq 1 ]; then
-    pip3 install pillow
-fi
 
 # Check if Arduino is connected
 if [ ! -e "/dev/ttyACM0" ]; then
@@ -84,78 +62,77 @@ fi
 
 # Check for cameras if video is enabled
 if [ $DISABLE_VIDEO -eq 0 ]; then
-    echo "Checking Pi camera devices..."
-    
-    # Try to list camera info using libcamera-tools
-    if command_exists libcamera-hello; then
-        libcamera-hello --list-cameras
-    elif command_exists v4l2-ctl; then
+    echo "Checking camera devices..."
+    if command_exists v4l2-ctl; then
         v4l2-ctl --list-devices
+    else
+        ls -l /dev/video*
     fi
     
-    # Try to get PiCamera info using Python
-    echo "Checking PiCamera with Python:"
-    python3 -c "from picamera2 import Picamera2; print(f'Found {len(Picamera2.global_camera_info())} cameras'); print(Picamera2.global_camera_info())"
-    
-    # Update config.ini with appropriate camera information if needed
+    # Update config.ini with appropriate camera information
+    # For Pi 5, we should use correct camera ID from detected devices
     if [ -f "config.ini" ]; then
-        if ! grep -q "\[video\]" config.ini; then
-            echo "Adding Pi camera settings to config.ini"
-            # Use camera 0 for internal and camera 1 for external by default
-            echo -e "\n[video]\ninternal_camera_id = 0\nexternal_camera_id = 1\nframe_width = 640\nframe_height = 480\njpeg_quality = 75" >> config.ini
+        # Try to detect proper camera settings
+        # For PiCamera: Usually /dev/video0-7 on Pi 5 (rp1-cfe)
+        if grep -q "internal_camera_id" config.ini; then
+            echo "Using existing camera settings in config.ini"
+        else
+            echo "Adding default camera settings to config.ini (PiCamera for Pi 5)"
+            # We'll use /dev/video0 as a starting point for Pi 5
+            echo -e "\n[video]\ninternal_camera_id = 0\nuse_external_picam = True\nframe_width = 640\nframe_height = 480\njpeg_quality = 75\ndefault_layout = grid" >> config.ini
         fi
     fi
-    
-    # Replace camera_manager.py with Pi 5 specific version
-    echo "Installing Pi 5 specific camera manager..."
-    # Backup original if it doesn't exist
-    if [ ! -f camera_manager.py.orig ]; then
-        cp camera_manager.py camera_manager.py.orig
-    fi
-    cp pi5_camera_manager.py camera_manager.py
 fi
 
-# If using X11 display and video is enabled, set up X11
-if [ $DISABLE_VIDEO -eq 0 ] && [ $USE_FRAMEBUFFER -eq 0 ]; then
-    # Kill any existing X servers to avoid conflicts
-    if [ "$(id -u)" -eq 0 ]; then
-        pkill X || true
-    else
+# Set up display for video (if not disabled)
+if [ $DISABLE_VIDEO -eq 0 ]; then
+    # Check if X server is already running
+    if ! DISPLAY=:0 xset q &>/dev/null; then
+        echo "Starting X server with sudo..."
+        
+        # Kill any existing X servers to avoid conflicts
         sudo pkill X || true
-    fi
-    
-    # Start X server with sudo
-    echo "Starting X server..."
-    if [ "$(id -u)" -eq 0 ]; then
-        X :0 -nocursor -keeptty -noreset -ac &
+        
+        # Check if we need to add the user to input/video groups
+        CURRENT_USER=$(whoami)
+        if ! groups $CURRENT_USER | grep -q "input"; then
+            echo "Adding user to input group for X server permissions"
+            sudo usermod -a -G input $CURRENT_USER
+        fi
+        
+        # Try to start X server with sudo
+        sudo X :0 -nocursor -keeptty -noreset &
+        X_PID=$!
+        
+        # Wait for X to initialize
+        sleep 3
+        
+        if DISPLAY=:0 xset q &>/dev/null; then
+            echo "✅ X server started successfully with PID: $X_PID"
+            
+            # Export display environment variable
+            export DISPLAY=:0
+            
+            # Fix permissions for the X server
+            xhost +local:$CURRENT_USER
+            
+            # Disable screen blanking and power management
+            xset s off
+            xset -dpms
+            xset s noblank
+        else
+            echo "❌ Failed to start X server."
+            echo "You may need to run 'sudo raspi-config' and enable 'Boot to Desktop' or 'Console Autologin'"
+            echo "For now, continuing without display capabilities."
+        fi
     else
-        sudo X :0 -nocursor -keeptty -noreset -ac &
-    fi
-    X_PID=$!
-    
-    # Wait for X to initialize
-    sleep 3
-    
-    # Set up environment
-    export DISPLAY=:0
-    
-    # Allow current user to connect to X server
-    CURRENT_USER=$(whoami)
-    xhost +local:$CURRENT_USER
-    
-    # Disable screen blanking and power management
-    xset s off
-    xset -dpms
-    xset s noblank
-    
-    # Try to start a minimal window manager (if available)
-    # This helps ensure we get true fullscreen with no decorations
-    if command_exists openbox; then
-        openbox --config-file <(echo '<?xml version="1.0" encoding="UTF-8"?><openbox_config xmlns="http://openbox.org/3.4/rc"><applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications></openbox_config>') &
-        echo "Started openbox with no decorations"
-    elif command_exists matchbox-window-manager; then
-        matchbox-window-manager -use_titlebar no &
-        echo "Started matchbox with no decorations"
+        echo "✅ X server already running"
+        export DISPLAY=:0
+        
+        # Disable screen blanking and power management
+        xset s off
+        xset -dpms
+        xset s noblank
     fi
 fi
 
@@ -164,87 +141,30 @@ export OPENCV_VIDEOIO_PRIORITY_MSMF=0       # Disable Microsoft Media Foundation
 export OPENCV_VIDEOIO_PRIORITY_INTEL_MFX=0  # Disable Intel Media SDK
 export OPENCV_FFMPEG_LOGLEVEL=0             # Disable FFMPEG logging
 
-# Update controller.py to use the correct parameters for CameraManager
-if [ -f controller.py ]; then
-    echo "Updating controller.py to use correct camera parameters..."
-    
-    # Backup controller.py if not already backed up
-    if [ ! -f controller.py.orig ]; then
-        cp controller.py controller.py.orig
-    fi
-    
-    # Update CameraManager initialization to use external_camera_id instead of use_external_picam
-    sed -i 's/camera_manager = CameraManager(.*)/camera_manager = CameraManager(\n                internal_camera_id=video_params.get("internal_camera_id", 0),\n                external_camera_id=video_params.get("external_camera_id", 1),\n                disable_missing=True\n            )/' controller.py
-    
-    # Update video parameter reading
-    sed -i 's/video_params\["use_external_picam"\] = config.getboolean/video_params["external_camera_id"] = config.getint/g' controller.py
-}
-
 # Start the application with appropriate arguments
 echo "Starting Dans le Blanc des Yeux..."
-
-# Create startup script
-TMP_SCRIPT=$(mktemp)
-chmod +x $TMP_SCRIPT
-
-cat > $TMP_SCRIPT << EOF
-#!/bin/bash
-
-# This is a temporary script to run the correct version
-
-# If using framebuffer mode, modify controller.py temporarily
-if [ $USE_FRAMEBUFFER -eq 1 ]; then
-    # Check if we need to make the framebuffer replacement
-    if ! grep -q "FramebufferDisplay" controller.py; then
-        echo "Setting up framebuffer display mode..."
-        # Create backup of controller.py if it doesn't exist
-        if [ ! -f controller.py.framebuffer.backup ]; then
-            cp controller.py controller.py.framebuffer.backup
-        fi
-        
-        # Replace VideoDisplay with FramebufferDisplay in controller.py
-        sed -i 's/from video_display import VideoDisplay/from framebuffer_display import FramebufferDisplay/' controller.py
-        sed -i 's/video_display = VideoDisplay/video_display = FramebufferDisplay/' controller.py
-    fi
-else
-    # Restore original controller.py if we're not using framebuffer
-    if [ -f controller.py.framebuffer.backup ]; then
-        if grep -q "FramebufferDisplay" controller.py; then
-            echo "Restoring standard display mode..."
-            cp controller.py.framebuffer.backup controller.py
-        fi
-    fi
-fi
-
-# Set up arguments
 ARGS=""
+
 if [ $ENABLE_VISUAL -eq 1 ]; then
-    ARGS="\$ARGS --visualize"
+    ARGS="$ARGS --visualize"
 fi
 
 if [ $DISABLE_VIDEO -eq 1 ]; then
-    ARGS="\$ARGS --disable-video"
+    ARGS="$ARGS --disable-video"
 fi
 
-# Run the application
-if [ -n "\$ARGS" ]; then
-    python3 controller.py \$ARGS
+# Run with the assembled arguments
+if [ -n "$ARGS" ]; then
+    python3 controller.py $ARGS
 else
     python3 controller.py
 fi
-EOF
-
-# Execute our startup script
-$TMP_SCRIPT
 
 # Clean up X server if we started it
 if [ -n "$X_PID" ]; then
     echo "Stopping X server (PID: $X_PID)..."
-    kill $X_PID || true
+    sudo kill $X_PID || true
 fi
-
-# Remove the temporary script
-rm $TMP_SCRIPT
 
 # If the application exits, show a message
 echo "Application has exited."
