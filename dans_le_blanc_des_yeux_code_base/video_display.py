@@ -160,58 +160,78 @@ class VideoDisplay:
         """Handle new external frame from remote device."""
         self.external_frame_updated.set()
         
-    def _rotate_and_fit_frame(self, frame: np.ndarray, rotation_type: str, is_external: bool = False) -> np.ndarray:
-        """
-        Rotate frame and fit it to the display without stretching.
-        
-        Args:
-            frame: The input frame to process
-            rotation_type: Type of rotation ('90_clockwise', '180', etc.)
-            is_external: Whether this is the external camera feed
-            
-        Returns:
-            Processed frame that fits the display without stretching
-        """
+    def _rotate_external_camera(self, frame):
+        """Rotate external camera 90 degrees clockwise using direct numpy operations"""
         if frame is None:
             return None
             
-        # Apply the appropriate rotation
-        if rotation_type == '90_clockwise' or (is_external and rotation_type == 'auto'):
-            # 90 degrees clockwise rotation for external camera
-            rotated = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        elif rotation_type == '180' or (not is_external and rotation_type == 'auto'):
-            # 180 degrees rotation for internal camera
-            rotated = cv2.rotate(frame, cv2.ROTATE_180)
-        else:
-            rotated = frame.copy()
+        # Use numpy's rot90 for reliable rotation
+        # Rotate 90 degrees clockwise (k=3 means rotate 3 times counterclockwise, which equals 1 time clockwise)
+        rotated = np.rot90(frame, k=3)
+        return rotated
+        
+    def _rotate_internal_camera(self, frame):
+        """Rotate internal camera 180 degrees using direct numpy operations"""
+        if frame is None:
+            return None
             
-        # Create a black background image with the size of the display
+        # Use numpy's rot90 for reliable rotation
+        # Rotate 180 degrees (k=2 means rotate 2 times counterclockwise)
+        rotated = np.rot90(frame, k=2)
+        return rotated
+    
+    def _fit_frame_to_display(self, frame):
+        """Fit frame to display without stretching"""
+        if frame is None:
+            return None
+            
+        # Create a black background
         background = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
         
-        # Calculate the aspect ratio of the rotated frame
-        h, w = rotated.shape[:2]
-        aspect_ratio = w / h
+        # Calculate aspect ratio preservation
+        frame_h, frame_w = frame.shape[:2]
+        frame_aspect = frame_w / frame_h
+        window_aspect = self.window_width / self.window_height
         
-        # Calculate dimensions to maintain aspect ratio
-        if (self.window_width / self.window_height) > aspect_ratio:
-            # Window is wider than the frame's aspect ratio
-            new_height = self.window_height
-            new_width = int(new_height * aspect_ratio)
+        # Calculate new dimensions that fit within the window
+        if window_aspect > frame_aspect:
+            # Window is wider than frame - constrain by height
+            new_h = self.window_height
+            new_w = int(new_h * frame_aspect)
         else:
-            # Window is taller than the frame's aspect ratio
-            new_width = self.window_width
-            new_height = int(new_width / aspect_ratio)
+            # Window is taller than frame - constrain by width
+            new_w = self.window_width
+            new_h = int(new_w / frame_aspect)
+        
+        # Check if new dimensions are valid
+        if new_w <= 0 or new_h <= 0:
+            print(f"Warning: Invalid dimensions calculated for frame: {new_w}x{new_h}")
+            return background
             
-        # Resize the frame while maintaining aspect ratio
-        resized = cv2.resize(rotated, (new_width, new_height))
+        # Resize the frame
+        try:
+            resized = cv2.resize(frame, (new_w, new_h))
+        except Exception as e:
+            print(f"Error resizing frame: {e}")
+            return background
+            
+        # Calculate position to center in the window
+        x_offset = (self.window_width - new_w) // 2
+        y_offset = (self.window_height - new_h) // 2
         
-        # Calculate position to center the frame on the background
-        y_offset = (self.window_height - new_height) // 2
-        x_offset = (self.window_width - new_width) // 2
-        
-        # Place the resized frame on the black background
-        background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized
-        
+        # Ensure offsets are valid
+        if x_offset < 0 or y_offset < 0:
+            print(f"Warning: Invalid offsets calculated: x={x_offset}, y={y_offset}")
+            return background
+            
+        # Copy the resized frame onto the background at the calculated position
+        try:
+            background[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        except Exception as e:
+            print(f"Error placing frame on background: {e}, " 
+                  f"Shape: background({background.shape}), resized({resized.shape}), "
+                  f"Offsets: x={x_offset}, y={y_offset}, w={new_w}, h={new_h}")
+            
         return background
     
     def _display_loop(self) -> None:
@@ -264,17 +284,24 @@ class VideoDisplay:
                         if frame_counter % 100 == 0:
                             print(f"Displaying video frame {frame_counter}: {source_desc} ({frame.shape[1]}x{frame.shape[0]})")
                         
-                        # Apply rotation and aspect ratio preservation based on camera type
+                        # Process frame based on source
                         if "External" in source_desc:
                             # External camera - 90 degrees clockwise rotation
-                            display_frame = self._rotate_and_fit_frame(frame, '90_clockwise', is_external=True)
+                            rotated = self._rotate_external_camera(frame)
+                            display_frame = self._fit_frame_to_display(rotated)
+                            
+                            # Add debug info
+                            cv2.putText(display_frame, f"External Cam (Rotated 90° CW)", 
+                                      (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                            
                         else:
                             # Internal camera - 180 degrees rotation
-                            display_frame = self._rotate_and_fit_frame(frame, '180', is_external=False)
-                        
-                        # Add source label to the top-left corner
-                        cv2.putText(display_frame, source_desc, (10, 30), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                            rotated = self._rotate_internal_camera(frame)
+                            display_frame = self._fit_frame_to_display(rotated)
+                            
+                            # Add debug info
+                            cv2.putText(display_frame, f"Internal Cam (Rotated 180°)", 
+                                      (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                     else:
                         # Use a completely black frame
                         display_frame = black_frame.copy()
@@ -283,6 +310,12 @@ class VideoDisplay:
                         if source_desc:
                             cv2.putText(display_frame, source_desc, (10, 30), 
                                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    
+                    # Add debug info about frame dimensions
+                    if should_display and frame is not None:
+                        info_text = f"Original: {frame.shape[1]}x{frame.shape[0]}, Display: {self.window_width}x{self.window_height}"
+                        cv2.putText(display_frame, info_text, (10, self.window_height-20), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
                     
                     # Show display if available
                     if display_available:
