@@ -1,12 +1,6 @@
 """
-Video display module for the Dans le Blanc des Yeux installation.
-Handles displaying video streams based on pressure state.
-
-Logic:
-1. No pressure on either device: Display nothing (black screen)
-2. Local pressure: Display remote external camera video
-3. Remote pressure: Display nothing
-4. Both have pressure: Display remote internal camera video
+Fixed video display module for the Dans le Blanc des Yeux installation.
+Includes proper fullscreen handling and enhanced display code.
 """
 
 import os
@@ -14,6 +8,7 @@ import time
 import threading
 import cv2
 import numpy as np
+import subprocess
 from typing import Dict, Optional, Tuple, List
 
 from system_state import system_state
@@ -59,19 +54,18 @@ class VideoDisplay:
     def start(self) -> bool:
         """Start the video display system."""
         print("Starting video display...")
-
+        
         # Try to create window with proper fullscreen setup
         try:
             # First destroy any existing windows with the same name
             cv2.destroyWindow(self.window_name)
-
+            
             # Create window with specific flags
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-
+            
             # Get screen resolution
             try:
                 # Try to get screen size using alternative method
-                import subprocess
                 output = subprocess.check_output(['xrandr'], universal_newlines=True)
                 for line in output.splitlines():
                     if ' connected' in line and 'primary' in line:
@@ -85,38 +79,39 @@ class VideoDisplay:
                         break
             except Exception as e:
                 print(f"Could not detect screen resolution: {e}, using defaults")
-
+            
             # Set window size to exact screen size
             cv2.resizeWindow(self.window_name, self.window_width, self.window_height)
-
+            
             # Set window position to top-left corner
             cv2.moveWindow(self.window_name, 0, 0)
-
-            # Make sure the window is visible
-            cv2.imshow(self.window_name, np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8))
+            
+            # Make sure the window is visible with black frame
+            black_frame = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
+            cv2.imshow(self.window_name, black_frame)
             cv2.waitKey(1)
-
+            
             # IMPORTANT: Set fullscreen AFTER showing the window
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-
+            
             # Also try to set window to stay on top to prevent it from being covered
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_TOPMOST, 1)
-
+            
             # Wait a moment for window to settle
             time.sleep(0.5)
-
+            
             print("Window created in fullscreen mode")
         except Exception as e:
             print(f"Warning: Could not create window: {e}")
             print("Display may not be available. Continuing anyway...")
-
+        
         self.running = True
-
+        
         # Start display thread
         self.thread = threading.Thread(target=self._display_loop)
         self.thread.daemon = True
         self.thread.start()
-
+        
         print("Video display started")
         return True
     

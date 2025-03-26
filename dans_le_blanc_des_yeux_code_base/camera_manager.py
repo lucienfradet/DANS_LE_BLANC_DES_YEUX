@@ -1,45 +1,22 @@
 """
 Camera manager for the Dans le Blanc des Yeux installation.
-With special optimizations for Raspberry Pi 5 camera handling.
+Specifically designed for Raspberry Pi 5 with two dedicated ribbon-cable cameras.
 """
 
 import time
 import threading
 import cv2
 import numpy as np
-import os
 import subprocess
 from typing import Dict, Optional, Tuple, List
-import re
 
 class CameraManager:
-    """Manages multiple camera sources for the installation."""
+    """Manages multiple Pi Camera modules connected via ribbon cables."""
     
-    def __init__(self, internal_camera_id: int = 0, external_picam: bool = True, disable_missing: bool = True, swap_cameras: bool = True):
-        """
-        Initialize the camera manager.
-        
-        Args:
-            internal_camera_id: ID of the internal camera
-            external_picam: Whether to use PiCamera for external camera
-            disable_missing: Continue even if cameras aren't available
-            swap_cameras: Swap internal and external camera assignments
-        """
-        # If swap_cameras is true, we'll swap the internal and external cameras
-        self.swap_cameras = swap_cameras
-        
-        # Store the original parameters
-        if self.swap_cameras:
-            print("CAMERA ASSIGNMENTS SWAPPED: Using external camera as internal and vice versa")
-            self.actual_internal_id = internal_camera_id  # This will be used for external
-            self.actual_external_picam = not external_picam  # Invert this setting
-        else:
-            self.actual_internal_id = internal_camera_id
-            self.actual_external_picam = external_picam
-            
+    def __init__(self, internal_camera_id: int = 0, external_camera_id: int = 1, disable_missing: bool = True):
         self.internal_camera_id = internal_camera_id
-        self.use_external_picam = external_picam
-        self.disable_missing = disable_missing
+        self.external_camera_id = external_camera_id
+        self.disable_missing = disable_missing  # Whether to continue if cameras are missing
         
         # Camera objects
         self.internal_camera = None
@@ -59,82 +36,14 @@ class CameraManager:
         self.frame_height = 480
         self.frame_rate = 30
         
-        # Pi-specific camera IDs
-        self.pi_camera_paths = self._get_pi_camera_paths()
-        
         # Generate test pattern images for when cameras are unavailable
         self._create_test_frames()
         
-        print("Camera manager initialized")
-    
-    def _get_pi_camera_paths(self) -> Dict[str, str]:
-        """Get Raspberry Pi camera device paths."""
-        camera_paths = {}
+        # Check which camera is working and adapt
+        # If only one camera works, we'll use it for both roles
+        self.use_same_camera_for_both = False
         
-        try:
-            # Try v4l2-ctl to list devices
-            result = subprocess.run(["v4l2-ctl", "--list-devices"], 
-                                   stdout=subprocess.PIPE, 
-                                   stderr=subprocess.PIPE, 
-                                   text=True, 
-                                   check=False)
-            
-            if result.returncode == 0:
-                # Parse output to find camera devices
-                device_name = None
-                lines = result.stdout.strip().split('\n')
-                
-                for line in lines:
-                    if ':' in line:
-                        # This is a device name line
-                        device_name = line.split(':')[0].strip()
-                    elif '/dev/video' in line and device_name:
-                        # This is a device path line
-                        device_path = line.strip()
-                        
-                        # For Pi 5, we're interested in the rp1-cfe devices for PiCamera
-                        if 'rp1-cfe' in device_name:
-                            if 'picamera_main' not in camera_paths:
-                                # First rp1-cfe device is main PiCamera
-                                camera_paths['picamera_main'] = device_path
-                                print(f"Found main PiCamera at {device_path}")
-                                continue
-                        
-                        # Look for USB webcams (usually show up as different device types)
-                        if 'usb' in device_name.lower() and 'webcam' not in camera_paths:
-                            camera_paths['webcam'] = device_path
-                            print(f"Found USB webcam at {device_path}")
-                
-                # If specific cameras weren't found, try to make best guesses
-                if 'picamera_main' not in camera_paths and 'rp1-cfe' in result.stdout:
-                    # Extract the first video device for rp1-cfe
-                    match = re.search(r'rp1-cfe.*?\n\s+(/dev/video\d+)', result.stdout, re.DOTALL)
-                    if match:
-                        camera_paths['picamera_main'] = match.group(1)
-                        print(f"Found likely PiCamera at {camera_paths['picamera_main']}")
-                
-                # Find any webcam as a fallback
-                if 'webcam' not in camera_paths:
-                    # Get any video device not already assigned
-                    for line in lines:
-                        if '/dev/video' in line:
-                            device_path = line.strip()
-                            if (device_path not in camera_paths.values() and 
-                                'picamera_main' in camera_paths and
-                                device_path != camera_paths['picamera_main']):
-                                camera_paths['webcam'] = device_path
-                                print(f"Found possible webcam at {device_path}")
-                                break
-        except Exception as e:
-            print(f"Error detecting Pi cameras: {e}")
-        
-        # Fallback to default device paths if nothing was found
-        if not camera_paths:
-            camera_paths['picamera_main'] = '/dev/video0'
-            camera_paths['webcam'] = '/dev/video1'
-            print("Using default camera paths: /dev/video0 and /dev/video1")
-        
-        return camera_paths
+        print("Pi 5 Camera manager initialized")
     
     def _create_test_frames(self):
         """Create test pattern frames for when cameras are unavailable."""
@@ -170,41 +79,68 @@ class CameraManager:
     
     def start(self) -> bool:
         """Initialize and start all cameras."""
-        print("Starting camera manager...")
+        print("Starting Pi 5 camera manager...")
         self.running = True
         
-        # Start internal camera
-        internal_started = self._start_internal_camera()
-        if not internal_started:
-            print("Internal camera not available, using test pattern")
-            self.internal_frame = self.internal_test_frame
-        
-        # Start external camera
-        external_started = self._start_external_camera()
-        if not external_started:
-            print("External camera not available, using test pattern")
-            self.external_frame = self.external_test_frame
-        
-        # If both cameras failed and we don't allow missing cameras, abort
-        if not internal_started and not external_started and not self.disable_missing:
-            print("Both cameras failed to start and disable_missing=False")
+        try:
+            # Import PiCamera2 here to avoid errors if it's not installed
+            from picamera2 import Picamera2
+            
+            # Get list of available cameras
+            num_cameras = Picamera2.global_camera_info()
+            print(f"Found {len(num_cameras)} cameras")
+            
+            # Start internal camera
+            internal_started = self._start_internal_camera()
+            if not internal_started:
+                print("Internal camera not available, using test pattern")
+                self.internal_frame = self.internal_test_frame
+            
+            # Start external camera
+            external_started = self._start_external_camera()
+            if not external_started:
+                print("External camera not available")
+                
+                # If internal camera works but external doesn't, use internal for both
+                if internal_started:
+                    print("Using internal camera for both roles")
+                    self.use_same_camera_for_both = True
+                    self.external_frame = self.internal_frame.copy()
+                else:
+                    # Neither camera is working
+                    self.external_frame = self.external_test_frame
+            
+            # If both cameras failed and we don't allow missing cameras, abort
+            if not internal_started and not external_started and not self.disable_missing:
+                print("Both cameras failed to start and disable_missing=False")
+                self.running = False
+                return False
+            
+            # Start capture threads for available cameras
+            if internal_started:
+                internal_thread = threading.Thread(target=self._internal_capture_loop)
+                internal_thread.daemon = True
+                internal_thread.start()
+                self.threads.append(internal_thread)
+            
+            if external_started and not self.use_same_camera_for_both:
+                external_thread = threading.Thread(target=self._external_capture_loop)
+                external_thread.daemon = True
+                external_thread.start()
+                self.threads.append(external_thread)
+            
+            return True
+            
+        except ImportError:
+            print("ERROR: PiCamera2 module not found")
+            print("Please install with: pip install picamera2")
             self.running = False
             return False
         
-        # Start capture threads for available cameras
-        if internal_started:
-            internal_thread = threading.Thread(target=self._internal_capture_loop)
-            internal_thread.daemon = True
-            internal_thread.start()
-            self.threads.append(internal_thread)
-        
-        if external_started:
-            external_thread = threading.Thread(target=self._external_capture_loop)
-            external_thread.daemon = True
-            external_thread.start()
-            self.threads.append(external_thread)
-        
-        return True
+        except Exception as e:
+            print(f"Error starting cameras: {e}")
+            self.running = False
+            return False
     
     def stop(self) -> None:
         """Stop all cameras and release resources."""
@@ -215,23 +151,18 @@ class CameraManager:
         for thread in self.threads:
             thread.join(timeout=1.0)
         
-        # Release internal camera
+        # Stop internal camera
         if self.internal_camera is not None:
             try:
-                self.internal_camera.release()
+                self.internal_camera.stop()
             except Exception as e:
-                print(f"Error releasing internal camera: {e}")
+                print(f"Error stopping internal camera: {e}")
             self.internal_camera = None
         
-        # Stop external camera
-        if self.external_camera is not None:
+        # Stop external camera if it's not the same as internal
+        if self.external_camera is not None and not self.use_same_camera_for_both:
             try:
-                if "picamera2" in str(type(self.external_camera)).lower():
-                    # PiCamera2 stop method
-                    self.external_camera.stop()
-                else:
-                    # OpenCV VideoCapture release method
-                    self.external_camera.release()
+                self.external_camera.stop()
             except Exception as e:
                 print(f"Error stopping external camera: {e}")
             self.external_camera = None
@@ -246,7 +177,11 @@ class CameraManager:
     def get_external_frame(self) -> Optional[np.ndarray]:
         """Get the latest frame from the external camera."""
         with self.lock:
-            return self.external_frame.copy() if self.external_frame is not None else None
+            # If using same camera for both, return internal frame
+            if self.use_same_camera_for_both:
+                return self.internal_frame.copy() if self.internal_frame is not None else None
+            else:
+                return self.external_frame.copy() if self.external_frame is not None else None
     
     def is_internal_camera_available(self) -> bool:
         """Check if internal camera is available."""
@@ -254,137 +189,24 @@ class CameraManager:
     
     def is_external_camera_available(self) -> bool:
         """Check if external camera is available."""
-        return self.external_camera is not None
-    
-    def _path_to_index(self, path: str) -> int:
-        """Convert a device path to a camera index."""
-        try:
-            # Extract the number from something like /dev/video0
-            match = re.search(r'/dev/video(\d+)', path)
-            if match:
-                return int(match.group(1))
-            return 0  # Default to camera 0 if no match
-        except Exception:
-            return 0
+        return self.external_camera is not None or self.use_same_camera_for_both
     
     def _start_internal_camera(self) -> bool:
         """Initialize and start the internal camera."""
         try:
-            if self.swap_cameras:
-                # When swapped, internal camera uses external camera logic
-                if self.actual_external_picam:
-                    return self._start_picamera_as_internal()
-                else:
-                    return self._start_usb_as_internal(self.actual_internal_id)
-            else:
-                # Normal case - internal camera is a USB camera
-                print(f"Starting internal camera (ID: {self.internal_camera_id})...")
-                self.internal_camera = cv2.VideoCapture(self.internal_camera_id)
-                
-                # Set resolution and fps
-                self.internal_camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-                self.internal_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-                self.internal_camera.set(cv2.CAP_PROP_FPS, self.frame_rate)
-                
-                # Check if camera opened successfully
-                if not self.internal_camera.isOpened():
-                    print(f"Failed to open internal camera with ID {self.internal_camera_id}")
-                    self.internal_camera.release()
-                    self.internal_camera = None
-                    return False
-                
-                # Read a test frame
-                ret, frame = self.internal_camera.read()
-                if not ret or frame is None:
-                    print(f"Failed to read from internal camera with ID {self.internal_camera_id}")
-                    self.internal_camera.release()
-                    self.internal_camera = None
-                    return False
-                
-                # Store initial frame
-                with self.lock:
-                    self.internal_frame = frame
-                    
-                print("Internal camera started successfully")
-                return True
-            
-        except Exception as e:
-            print(f"Error starting internal camera: {e}")
-            if self.internal_camera is not None:
-                try:
-                    if hasattr(self.internal_camera, 'release'):
-                        self.internal_camera.release()
-                    elif hasattr(self.internal_camera, 'stop'):
-                        self.internal_camera.stop()
-                except:
-                    pass
-                self.internal_camera = None
-            return False
-
-    def _start_external_camera(self) -> bool:
-        """Initialize and start the external camera."""
-        try:
-            if self.swap_cameras:
-                # When swapped, external camera uses internal camera logic
-                print(f"Starting external camera (using internal ID: {self.actual_internal_id})...")
-                self.external_camera = cv2.VideoCapture(self.actual_internal_id)
-                
-                # Set resolution and fps
-                self.external_camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-                self.external_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-                self.external_camera.set(cv2.CAP_PROP_FPS, self.frame_rate)
-                
-                # Check if camera opened successfully
-                if not self.external_camera.isOpened():
-                    print(f"Failed to open external camera with ID {self.actual_internal_id}")
-                    self.external_camera.release()
-                    self.external_camera = None
-                    return False
-                
-                # Read a test frame
-                ret, frame = self.external_camera.read()
-                if not ret or frame is None:
-                    print(f"Failed to read from external camera with ID {self.actual_internal_id}")
-                    self.external_camera.release()
-                    self.external_camera = None
-                    return False
-                
-                # Store initial frame
-                with self.lock:
-                    self.external_frame = frame
-                
-                print("External camera started successfully")
-                return True
-            else:
-                # Normal case
-                if self.use_external_picam:
-                    return self._start_picamera_as_external()
-                else:
-                    return self._start_usb_as_external()
-            
-        except Exception as e:
-            print(f"Error starting external camera: {e}")
-            if self.external_camera is not None:
-                try:
-                    if hasattr(self.external_camera, 'release'):
-                        self.external_camera.release()
-                    elif hasattr(self.external_camera, 'stop'):
-                        self.external_camera.stop()
-                except:
-                    pass
-                self.external_camera = None
-            return False
-
-    def _start_picamera_as_internal(self) -> bool:
-        """Start PiCamera as the internal camera."""
-        try:
-            # Import PiCamera2 here to avoid errors if it's not installed
             from picamera2 import Picamera2
             
-            print("Starting PiCamera as internal camera...")
+            print(f"Starting internal camera (ID: {self.internal_camera_id})...")
+            
+            # Handle case where there might not be enough cameras
+            camera_info = Picamera2.global_camera_info()
+            if len(camera_info) <= self.internal_camera_id:
+                print(f"Camera ID {self.internal_camera_id} not available")
+                print(f"Available cameras: {len(camera_info)}")
+                return False
             
             # Initialize PiCamera
-            self.internal_camera = Picamera2(0)  # Usually camera index 0
+            self.internal_camera = Picamera2(self.internal_camera_id)
             
             # Configure camera
             config = self.internal_camera.create_preview_configuration(
@@ -399,17 +221,20 @@ class CameraManager:
             # Test capture
             test_frame = self.internal_camera.capture_array()
             if test_frame is None:
-                raise Exception("Failed to capture test frame")
+                print("Failed to capture test frame from internal camera")
+                self.internal_camera.stop()
+                self.internal_camera = None
+                return False
             
             # Store initial frame
             with self.lock:
                 self.internal_frame = test_frame
                 
-            print("PiCamera started successfully as internal camera")
+            print("Internal camera started successfully")
             return True
             
-        except (ImportError, Exception) as e:
-            print(f"Error with PiCamera: {e}")
+        except Exception as e:
+            print(f"Error starting internal camera: {e}")
             if self.internal_camera is not None:
                 try:
                     self.internal_camera.stop()
@@ -417,223 +242,63 @@ class CameraManager:
                     pass
                 self.internal_camera = None
             return False
-
-    def _start_usb_as_internal(self, camera_id: int) -> bool:
-        """Start USB camera as the internal camera."""
+    
+    def _start_external_camera(self) -> bool:
+        """Initialize and start the external camera."""
         try:
-            print(f"Starting USB camera as internal (ID: {camera_id})...")
-            self.internal_camera = cv2.VideoCapture(camera_id)
+            from picamera2 import Picamera2
             
-            # Set resolution and fps
-            self.internal_camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-            self.internal_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-            self.internal_camera.set(cv2.CAP_PROP_FPS, self.frame_rate)
+            print(f"Starting external camera (ID: {self.external_camera_id})...")
             
-            # Check if camera opened successfully
-            if not self.internal_camera.isOpened():
-                print(f"Failed to open USB camera as internal with ID {camera_id}")
-                self.internal_camera.release()
-                self.internal_camera = None
+            # Get available cameras
+            camera_info = Picamera2.global_camera_info()
+            if len(camera_info) <= self.external_camera_id:
+                print(f"Camera ID {self.external_camera_id} not available")
+                print(f"Available cameras: {len(camera_info)}")
                 return False
             
-            # Read a test frame
-            ret, frame = self.internal_camera.read()
-            if not ret or frame is None:
-                print(f"Failed to read from USB camera as internal with ID {camera_id}")
-                self.internal_camera.release()
-                self.internal_camera = None
+            # Check if we're trying to use the same camera twice
+            if self.external_camera_id == self.internal_camera_id:
+                print("WARNING: External camera ID is the same as internal camera ID")
+                print("Using the same camera for both roles")
+                self.use_same_camera_for_both = True
+                return False  # Return false so we don't create two instances
+            
+            # Initialize PiCamera
+            self.external_camera = Picamera2(self.external_camera_id)
+            
+            # Configure camera
+            config = self.external_camera.create_preview_configuration(
+                main={"size": (self.frame_width, self.frame_height), "format": "RGB888"},
+                controls={"FrameRate": self.frame_rate}
+            )
+            self.external_camera.configure(config)
+            
+            # Start camera
+            self.external_camera.start()
+            
+            # Test capture
+            test_frame = self.external_camera.capture_array()
+            if test_frame is None:
+                print("Failed to capture test frame from external camera")
+                self.external_camera.stop()
+                self.external_camera = None
                 return False
             
             # Store initial frame
             with self.lock:
-                self.internal_frame = frame
+                self.external_frame = test_frame
                 
-            print(f"USB camera ID {camera_id} started successfully as internal")
+            print("External camera started successfully")
             return True
             
         except Exception as e:
-            print(f"Error starting USB camera as internal: {e}")
-            if self.internal_camera is not None:
-                self.internal_camera.release()
-                self.internal_camera = None
-            return False
-
-    def _start_picamera_as_external(self) -> bool:
-        """Start PiCamera as the external camera."""
-        try:
-            # Import PiCamera2 here to avoid errors if it's not installed
-            from picamera2 import Picamera2
-            
-            print("Starting PiCamera as external camera...")
-            
-            # Initialize PiCamera - try multiple camera indices
-            for camera_id in [0, 1]:
-                try:
-                    self.external_camera = Picamera2(camera_id)
-                    
-                    # Configure camera
-                    config = self.external_camera.create_preview_configuration(
-                        main={"size": (self.frame_width, self.frame_height), "format": "RGB888"},
-                        controls={"FrameRate": self.frame_rate}
-                    )
-                    self.external_camera.configure(config)
-                    
-                    # Start camera
-                    self.external_camera.start()
-                    
-                    # Test capture
-                    test_frame = self.external_camera.capture_array()
-                    if test_frame is None:
-                        print(f"PiCamera ID {camera_id} returned empty frame, trying next...")
-                        self.external_camera.stop()
-                        self.external_camera = None
-                        continue
-                    
-                    # Store initial frame
-                    with self.lock:
-                        self.external_frame = test_frame
-                        
-                    print(f"PiCamera ID {camera_id} started successfully as external")
-                    return True
-                except Exception as e:
-                    print(f"Failed to start PiCamera ID {camera_id} as external: {e}")
-                    if self.external_camera is not None:
-                        try:
-                            self.external_camera.stop()
-                        except:
-                            pass
-                        self.external_camera = None
-            
-            print("All PiCamera attempts failed")
-            return False
-            
-        except ImportError as e:
-            print(f"PiCamera import error: {e}")
-            print("Falling back to USB camera as external")
-            return self._start_usb_as_external()
-        except Exception as e:
-            print(f"Unexpected error with PiCamera: {e}")
+            print(f"Error starting external camera: {e}")
             if self.external_camera is not None:
                 try:
                     self.external_camera.stop()
                 except:
                     pass
-                self.external_camera = None
-            return False
-
-    def _start_usb_as_external(self) -> bool:
-        """Start USB camera as the external camera."""
-        try:
-            # Try to find a camera ID different from the internal camera
-            camera_ids = [1, 2, 0]  # Try these IDs in order
-            
-            for camera_id in camera_ids:
-                if camera_id == self.internal_camera_id:
-                    continue  # Skip the internal camera ID
-                    
-                print(f"Starting USB camera as external (ID: {camera_id})...")
-                self.external_camera = cv2.VideoCapture(camera_id)
-                
-                # Set resolution and fps
-                self.external_camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-                self.external_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-                self.external_camera.set(cv2.CAP_PROP_FPS, self.frame_rate)
-                
-                # Check if camera opened successfully
-                if not self.external_camera.isOpened():
-                    print(f"Failed to open USB camera as external with ID {camera_id}")
-                    self.external_camera.release()
-                    self.external_camera = None
-                    continue
-                
-                # Read a test frame
-                ret, frame = self.external_camera.read()
-                if not ret or frame is None:
-                    print(f"Failed to read from USB camera as external with ID {camera_id}")
-                    self.external_camera.release()
-                    self.external_camera = None
-                    continue
-                
-                # Store initial frame
-                with self.lock:
-                    self.external_frame = frame
-                    
-                print(f"USB camera ID {camera_id} started successfully as external")
-                return True
-            
-            print("All USB camera attempts failed for external camera")
-            return False
-            
-        except Exception as e:
-            print(f"Error starting USB camera as external: {e}")
-            if self.external_camera is not None:
-                self.external_camera.release()
-                self.external_camera = None
-            return False
-    
-    def _start_external_usb_camera(self) -> bool:
-        """Try to initialize a USB camera as the external camera."""
-        try:
-            print("Starting external USB camera...")
-            
-            # Try using a different camera than the internal one
-            
-            # If we're using webcam as internal, try picam for external
-            if ('webcam' in self.pi_camera_paths and 
-                'picamera_main' in self.pi_camera_paths and
-                self._path_to_index(self.pi_camera_paths['webcam']) == self.internal_camera_id):
-                camera_id = self._path_to_index(self.pi_camera_paths['picamera_main'])
-                print(f"Using PiCamera device as external USB camera: {self.pi_camera_paths['picamera_main']} (ID: {camera_id})")
-            # Otherwise try webcam for external
-            elif 'webcam' in self.pi_camera_paths:
-                camera_id = self._path_to_index(self.pi_camera_paths['webcam'])
-                print(f"Using webcam as external camera: {self.pi_camera_paths['webcam']} (ID: {camera_id})")
-            # Try standard IDs as fallback
-            else:
-                # Try ID 1 first, then 0 if that's not the internal camera
-                if self.internal_camera_id != 1:
-                    camera_id = 1
-                else:
-                    camera_id = 0
-                print(f"Using fallback external camera ID: {camera_id}")
-            
-            if camera_id == self.internal_camera_id:
-                print(f"WARNING: External camera ID ({camera_id}) is the same as internal camera ID.")
-                print("Both cameras will show the same image.")
-            
-            self.external_camera = cv2.VideoCapture(camera_id)
-            
-            # Set resolution and fps
-            self.external_camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-            self.external_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-            self.external_camera.set(cv2.CAP_PROP_FPS, self.frame_rate)
-            
-            # Check if camera opened successfully
-            if not self.external_camera.isOpened():
-                print(f"Failed to open external USB camera with ID {camera_id}")
-                self.external_camera.release()
-                self.external_camera = None
-                return False
-            
-            # Read a test frame
-            ret, frame = self.external_camera.read()
-            if not ret or frame is None:
-                print(f"Failed to read from external USB camera with ID {camera_id}")
-                self.external_camera.release()
-                self.external_camera = None
-                return False
-            
-            # Store initial frame
-            with self.lock:
-                self.external_frame = frame
-            
-            print(f"External USB camera started successfully with ID {camera_id}")
-            return True
-            
-        except Exception as e:
-            print(f"Error starting external USB camera: {e}")
-            if self.external_camera is not None:
-                self.external_camera.release()
                 self.external_camera = None
             return False
     
@@ -646,41 +311,43 @@ class CameraManager:
         
         while self.running and self.internal_camera is not None:
             try:
-                ret, frame = self.internal_camera.read()
-                if ret and frame is not None:
+                # Capture frame
+                frame = self.internal_camera.capture_array()
+                
+                if frame is not None:
+                    # Store the frame
                     with self.lock:
                         self.internal_frame = frame
+                        
+                        # If using same camera for both, also update external frame
+                        if self.use_same_camera_for_both:
+                            self.external_frame = frame.copy()
                     
-                    # Log occasional status updates
+                    # Log status periodically
                     frame_count += 1
                     if frame_count % 100 == 0:
                         print(f"Internal camera: captured {frame_count} frames")
                 else:
                     current_time = time.time()
-                    # Limit error logging to avoid spamming
-                    if current_time - last_error_time > 5.0:
-                        print("Failed to read from internal camera")
+                    if current_time - last_error_time > 5:
+                        print("Failed to capture frame from internal camera")
                         last_error_time = current_time
                     
-                    # Use test pattern if camera fails
                     with self.lock:
                         if self.internal_frame is None:
                             self.internal_frame = self.internal_test_frame
                     
-                    # Wait a bit before retrying
-                    time.sleep(0.2)
+                    time.sleep(0.1)
             except Exception as e:
                 current_time = time.time()
-                # Limit error logging
-                if current_time - last_error_time > 5.0:
-                    print(f"Error in internal camera capture: {e}")
+                if current_time - last_error_time > 5:
+                    print(f"Error capturing from internal camera: {e}")
                     last_error_time = current_time
                 
-                # Use test pattern if camera fails
                 with self.lock:
                     self.internal_frame = self.internal_test_frame
-                    
-                time.sleep(0.5)  # Longer sleep on error
+                
+                time.sleep(0.5)
     
     def _external_capture_loop(self) -> None:
         """Continuously capture frames from the external camera."""
@@ -691,69 +358,39 @@ class CameraManager:
         
         while self.running and self.external_camera is not None:
             try:
-                if "picamera2" in str(type(self.external_camera)).lower():
-                    # PiCamera capture
-                    frame = self.external_camera.capture_array()
-                    if frame is not None:
-                        # Convert from BGR to RGB if needed
-                        if frame.shape[2] == 3:  # If it has 3 channels
-                            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        with self.lock:
-                            self.external_frame = frame
-                        
-                        # Log occasional status updates
-                        frame_count += 1
-                        if frame_count % 100 == 0:
-                            print(f"External camera: captured {frame_count} frames")
-                    else:
-                        current_time = time.time()
-                        # Limit error logging
-                        if current_time - last_error_time > 5.0:
-                            print("Failed to capture from external PiCamera")
-                            last_error_time = current_time
-                        
-                        # Use test pattern if camera fails
-                        with self.lock:
-                            if self.external_frame is None:
-                                self.external_frame = self.external_test_frame
-                        
-                        time.sleep(0.2)
+                # Capture frame
+                frame = self.external_camera.capture_array()
+                
+                if frame is not None:
+                    # Store the frame
+                    with self.lock:
+                        self.external_frame = frame
+                    
+                    # Log status periodically
+                    frame_count += 1
+                    if frame_count % 100 == 0:
+                        print(f"External camera: captured {frame_count} frames")
                 else:
-                    # USB camera capture
-                    ret, frame = self.external_camera.read()
-                    if ret and frame is not None:
-                        with self.lock:
-                            self.external_frame = frame
-                        
-                        # Log occasional status updates
-                        frame_count += 1
-                        if frame_count % 100 == 0:
-                            print(f"External camera: captured {frame_count} frames")
-                    else:
-                        current_time = time.time()
-                        # Limit error logging
-                        if current_time - last_error_time > 5.0:
-                            print("Failed to read from external USB camera")
-                            last_error_time = current_time
-                        
-                        # Use test pattern if camera fails
-                        with self.lock:
-                            if self.external_frame is None:
-                                self.external_frame = self.external_test_frame
-                        
-                        time.sleep(0.2)
+                    current_time = time.time()
+                    if current_time - last_error_time > 5:
+                        print("Failed to capture frame from external camera")
+                        last_error_time = current_time
+                    
+                    with self.lock:
+                        if self.external_frame is None:
+                            self.external_frame = self.external_test_frame
+                    
+                    time.sleep(0.1)
             except Exception as e:
                 current_time = time.time()
-                # Limit error logging
-                if current_time - last_error_time > 5.0:
-                    print(f"Error in external camera capture: {e}")
+                if current_time - last_error_time > 5:
+                    print(f"Error capturing from external camera: {e}")
                     last_error_time = current_time
                 
-                # Use test pattern if camera fails
                 with self.lock:
                     self.external_frame = self.external_test_frame
-                    
-                time.sleep(0.5)  # Longer sleep on error
+                
+                time.sleep(0.5)
 
 
 # Test function to run the camera manager standalone
