@@ -92,7 +92,7 @@ class VideoDisplay:
         self.external_frame_updated = threading.Event()
         
         # Debugging
-        self.debug_mode = False  # Set to True for debug overlay
+        self.debug_mode = True  # Set to True for debug overlay
         
         print("Video display initialized with settings:")
         print(f"Display dimensions: {self.window_width}x{self.window_height}")
