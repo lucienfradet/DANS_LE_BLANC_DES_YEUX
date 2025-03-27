@@ -229,7 +229,10 @@ class VideoDisplay:
         # Try to create window with proper fullscreen setup
         try:
             # First destroy any existing windows with the same name
-            cv2.destroyWindow(self.window_name)
+            try:
+                cv2.destroyWindow(self.window_name)
+            except():
+                pass  # Silently ignore if window doesn't exist
             
             # Create window with specific flags
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
