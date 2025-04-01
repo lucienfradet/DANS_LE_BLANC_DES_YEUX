@@ -61,7 +61,7 @@ class VideoDisplay:
         self.display_options = {
             'show_info_overlay': True,   # Show text overlay with source info
             'fullscreen': True,          # Run in fullscreen mode
-            'center_frame': True,        # Center the frame on screen (overrides position)
+            'center_frame': False,        # Center the frame on screen (overrides position)
             'preserve_aspect_ratio': True, # Keep aspect ratio when scaling
             'target_fps': 30             # Target frame rate for display
         }

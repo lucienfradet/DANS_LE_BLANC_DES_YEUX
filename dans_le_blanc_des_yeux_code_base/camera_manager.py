@@ -12,10 +12,26 @@ from typing import Dict, Optional, Tuple, List
 class CameraManager:
     """Manages multiple Pi Camera modules connected via ribbon cables."""
     
-    def __init__(self, internal_camera_id: int = 0, external_camera_id: int = 1, disable_missing: bool = True):
+    def __init__(
+        self,
+        internal_camera_id: int = 0,
+        external_camera_id: int = 1,
+        disable_missing: bool = True,
+        internal_frame_width: int = 640,
+        internal_frame_height: int = 480,
+        external_frame_width: int = 640,
+        external_frame_height: int = 480,
+        enable_autofocus: bool = True
+    ):
         self.internal_camera_id = internal_camera_id
         self.external_camera_id = external_camera_id
         self.disable_missing = disable_missing  # Whether to continue if cameras are missing
+        
+        # Camera dimensions
+        self.internal_frame_width = internal_frame_width
+        self.internal_frame_height = internal_frame_height
+        self.external_frame_width = external_frame_width
+        self.external_frame_height = external_frame_height
         
         # Camera objects
         self.internal_camera = None
@@ -30,10 +46,11 @@ class CameraManager:
         self.threads = []
         self.lock = threading.Lock()
         
-        # Frame dimensions
-        self.frame_width = 640
-        self.frame_height = 480
+        # Frame rate
         self.frame_rate = 30
+        
+        # Autofocus setting
+        self.enable_autofocus = enable_autofocus
         
         # Generate test pattern images for when cameras are unavailable
         self._create_test_frames()
@@ -47,10 +64,10 @@ class CameraManager:
     def _create_test_frames(self):
         """Create test pattern frames for when cameras are unavailable."""
         # Internal camera test frame (checkerboard pattern)
-        internal_test = np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
+        internal_test = np.zeros((self.internal_frame_height, self.internal_frame_width, 3), dtype=np.uint8)
         square_size = 40
-        for y in range(0, self.frame_height, square_size):
-            for x in range(0, self.frame_width, square_size):
+        for y in range(0, self.internal_frame_height, square_size):
+            for x in range(0, self.internal_frame_width, square_size):
                 if ((x // square_size) + (y // square_size)) % 2 == 0:
                     internal_test[y:y+square_size, x:x+square_size] = [0, 0, 128]  # Dark blue
                 else:
@@ -58,18 +75,18 @@ class CameraManager:
         
         # Add text
         cv2.putText(internal_test, "INTERNAL CAMERA UNAVAILABLE", 
-                    (int(self.frame_width/2) - 180, int(self.frame_height/2)), 
+                    (int(self.internal_frame_width/2) - 180, int(self.internal_frame_height/2)), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
         # External camera test frame (gradient pattern)
-        external_test = np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
-        for y in range(self.frame_height):
-            color_value = int(255 * y / self.frame_height)
+        external_test = np.zeros((self.external_frame_height, self.external_frame_width, 3), dtype=np.uint8)
+        for y in range(self.external_frame_height):
+            color_value = int(255 * y / self.external_frame_height)
             external_test[y, :] = [0, color_value, 0]  # Gradient green
             
         # Add text
         cv2.putText(external_test, "EXTERNAL CAMERA UNAVAILABLE", 
-                    (int(self.frame_width/2) - 180, int(self.frame_height/2)), 
+                    (int(self.external_frame_width/2) - 180, int(self.external_frame_height/2)), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
         # Store test frames
@@ -207,9 +224,9 @@ class CameraManager:
             # Initialize PiCamera
             self.internal_camera = Picamera2(self.internal_camera_id)
             
-            # Configure camera
+            # Configure camera with internal camera dimensions
             config = self.internal_camera.create_preview_configuration(
-                main={"size": (self.frame_width, self.frame_height), "format": "RGB888"},
+                main={"size": (self.internal_frame_width, self.internal_frame_height), "format": "RGB888"},
                 controls={"FrameRate": self.frame_rate}
             )
             self.internal_camera.configure(config)
@@ -246,6 +263,7 @@ class CameraManager:
         """Initialize and start the external camera."""
         try:
             from picamera2 import Picamera2
+            from picamera2.controls import Controls
             
             print(f"Starting external camera (ID: {self.external_camera_id})...")
             
@@ -266,12 +284,31 @@ class CameraManager:
             # Initialize PiCamera
             self.external_camera = Picamera2(self.external_camera_id)
             
-            # Configure camera
+            # Prepare camera controls with frame rate
+            camera_controls = {"FrameRate": self.frame_rate}
+            
+            # Configure camera with external camera dimensions
             config = self.external_camera.create_preview_configuration(
-                main={"size": (self.frame_width, self.frame_height), "format": "RGB888"},
-                controls={"FrameRate": self.frame_rate}
+                main={"size": (self.external_frame_width, self.external_frame_height), "format": "RGB888"},
+                controls=camera_controls
             )
             self.external_camera.configure(config)
+            
+            # Set up autofocus if enabled
+            if self.enable_autofocus:
+                try:
+                    # First check if autofocus is available
+                    camera_properties = self.external_camera.camera_properties
+                    if "AfMode" in camera_properties:
+                        from picamera2.controls import AfMode
+                        
+                        print("Enabling continuous autofocus for external camera")
+                        # Enable continuous autofocus
+                        self.external_camera.set_controls({"AfMode": AfMode.Continuous})
+                    else:
+                        print("Autofocus not available on this camera")
+                except Exception as af_error:
+                    print(f"Could not enable autofocus: {af_error}")
             
             # Start camera
             self.external_camera.start()
@@ -397,8 +434,15 @@ def test_camera_manager():
     """Test the camera manager by displaying frames from both cameras."""
     import cv2
     
-    # Initialize camera manager
-    camera_manager = CameraManager()
+    # Initialize camera manager with custom dimensions and autofocus
+    camera_manager = CameraManager(
+        internal_frame_width=640,
+        internal_frame_height=480,
+        external_frame_width=800,
+        external_frame_height=600,
+        enable_autofocus=True
+    )
+    
     if not camera_manager.start():
         print("Failed to start camera manager")
         return
