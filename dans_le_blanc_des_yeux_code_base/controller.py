@@ -189,8 +189,8 @@ if __name__ == "__main__":
                 disable_missing=True,  # Continue even if cameras aren't available
                 internal_frame_width=1024,
                 internal_frame_height=600,
-                external_frame_width=1000,
-                external_frame_height=550,
+                external_frame_width=1024,
+                external_frame_height=600,
                 enable_autofocus=True
             )
             if not camera_manager.start():
