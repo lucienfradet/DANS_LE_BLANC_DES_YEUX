@@ -19,8 +19,8 @@ class CameraManager:
         disable_missing: bool = True,
         internal_frame_width: int = 640,
         internal_frame_height: int = 480,
-        external_frame_width: int = 640,
-        external_frame_height: int = 480,
+        external_frame_width: int = 1000,
+        external_frame_height: int = 500,
         enable_autofocus: bool = True
     ):
         self.internal_camera_id = internal_camera_id

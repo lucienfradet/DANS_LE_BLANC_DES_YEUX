@@ -124,8 +124,8 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     xset s noblank
     
     # Set environment variables for Waveshare display dimensions
-    export WAVESHARE_WIDTH=1280
-    export WAVESHARE_HEIGHT=800
+    export WAVESHARE_WIDTH=1024
+    export WAVESHARE_HEIGHT=600
     
     # Try to start a minimal window manager (if available)
     # This helps ensure we get true fullscreen with no decorations
