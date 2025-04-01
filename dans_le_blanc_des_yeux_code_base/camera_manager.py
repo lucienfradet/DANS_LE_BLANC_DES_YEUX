@@ -1,8 +1,3 @@
-"""
-Raspberry Pi Camera Manager for the Dans le Blanc des Yeux installation.
-Specifically designed for Pi 5 with dedicated ribbon-cable cameras.
-"""
-
 import time
 import threading
 import cv2
@@ -19,8 +14,8 @@ class CameraManager:
         disable_missing: bool = True,
         internal_frame_width: int = 640,
         internal_frame_height: int = 480,
-        external_frame_width: int = 1000,
-        external_frame_height: int = 500,
+        external_frame_width: int = 500,
+        external_frame_height: int = 200,
         enable_autofocus: bool = True
     ):
         self.internal_camera_id = internal_camera_id
@@ -207,6 +202,91 @@ class CameraManager:
         """Check if external camera is available."""
         return self.external_camera is not None or self.use_same_camera_for_both
     
+    def _is_autofocus_supported(self, camera) -> bool:
+        """Check if the camera supports autofocus capabilities.
+        
+        This method tries multiple approaches to detect autofocus support
+        since different camera models and libcamera versions expose this differently.
+        """
+        try:
+            # Method 1: Check camera properties if available
+            if hasattr(camera, "camera_properties"):
+                properties = camera.camera_properties
+                if isinstance(properties, dict) and "AfMode" in properties:
+                    print("AF support detected via camera_properties")
+                    return True
+            
+            # Method 2: Try to get camera controls
+            try:
+                controls = camera.list_controls()
+                if "AfMode" in controls:
+                    print("AF support detected via list_controls")
+                    return True
+            except:
+                pass
+                
+            # Method 3: Check if we can set AF mode directly
+            try:
+                # Try setting manual focus mode and see if it works
+                current_controls = camera.controls
+                camera.set_controls({"AfMode": 0})  # Manual
+                # Reset to original
+                camera.set_controls(current_controls)
+                print("AF support detected via successful AfMode setting")
+                return True
+            except:
+                pass
+                
+            print("No autofocus support detected for this camera")
+            return False
+        except Exception as e:
+            print(f"Error checking autofocus support: {e}")
+            return False
+    
+    def _try_enable_autofocus(self, camera) -> bool:
+        """Try various methods to enable autofocus based on libcamera version.
+        
+        Returns True if autofocus was successfully enabled.
+        """
+        if not self._is_autofocus_supported(camera):
+            print("Autofocus not supported - skipping")
+            return False
+            
+        success = False
+        
+        # Strategy 1: Try continuous autofocus (libcamera 0.0.10+)
+        try:
+            print("Trying continuous autofocus (AfMode=2)")
+            camera.set_controls({"AfMode": 2, "AfTrigger": 0})
+            time.sleep(0.5)
+            success = True
+            print("Continuous autofocus enabled")
+        except Exception as e1:
+            print(f"Continuous autofocus failed: {e1}")
+            
+            # Strategy 2: Try single autofocus
+            try:
+                print("Trying single autofocus (AfMode=1)")
+                camera.set_controls({"AfMode": 1, "AfTrigger": 0})
+                time.sleep(0.5)
+                success = True
+                print("Single autofocus enabled")
+            except Exception as e2:
+                print(f"Single autofocus failed: {e2}")
+                
+                # Strategy 3: Older libcamera versions
+                try:
+                    print("Trying older libcamera autofocus method")
+                    camera.set_controls({"AfMode": 1})
+                    time.sleep(0.5)
+                    camera.set_controls({"AfTrigger": 1})
+                    success = True
+                    print("Autofocus trigger enabled (older method)")
+                except Exception as e3:
+                    print(f"All autofocus methods failed: {e3}")
+        
+        return success
+    
     def _start_internal_camera(self) -> bool:
         """Initialize and start the internal camera."""
         try:
@@ -263,7 +343,6 @@ class CameraManager:
         """Initialize and start the external camera."""
         try:
             from picamera2 import Picamera2
-            from picamera2.controls import Controls
             
             print(f"Starting external camera (ID: {self.external_camera_id})...")
             
@@ -297,15 +376,22 @@ class CameraManager:
             # Start camera
             self.external_camera.start()
 
+            # Allow the camera to initialize
             time.sleep(1)
 
             # Set up autofocus if enabled
             if self.enable_autofocus:
                 try:
-                    self.external_camera.set_controls({"AfMode": 2 ,"AfTrigger": 0})
-                    print("Enabling continuous autofocus for external camera")
+                    # Print camera model to help diagnose AF issues
+                    if hasattr(self.external_camera, "camera_properties") and "Model" in self.external_camera.camera_properties:
+                        camera_model = self.external_camera.camera_properties["Model"]
+                        print(f"External camera model: {camera_model}")
+                    
+                    # Try to enable autofocus using multiple strategies
+                    self._try_enable_autofocus(self.external_camera)
                 except Exception as af_error:
                     print(f"Could not enable autofocus: {af_error}")
+                    print("Continuing without autofocus")
             
             # Test capture
             test_frame = self.external_camera.capture_array()
