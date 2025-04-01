@@ -111,12 +111,12 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
         sudo pkill X || true
     fi
     
-    # Start X server with sudo and specific dimensions
-    echo "Starting X server with ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} resolution..."
+    # Start X server with sudo (without specifying dimensions at startup)
+    echo "Starting X server..."
     if [ "$(id -u)" -eq 0 ]; then
-        X :0 -nocursor -keeptty -noreset -ac -screen 0 ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}x24 &
+        X :0 -nocursor -keeptty -noreset -ac &
     else
-        sudo X :0 -nocursor -keeptty -noreset -ac -screen 0 ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}x24 &
+        sudo X :0 -nocursor -keeptty -noreset -ac &
     fi
     X_PID=$!
     
@@ -145,8 +145,15 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     xrandr | grep -w current
     
     # If we have a modeline and xrandr is available, try to explicitly set the resolution
-    if [ -n "$MODELINE" ] && command_exists xrandr; then
+    if command_exists xrandr; then
         echo "Configuring display with xrandr..."
+        
+        # Wait a bit longer to ensure X is fully initialized
+        sleep 2
+        
+        # Get the current output name and available resolutions
+        echo "Available outputs and modes:"
+        xrandr || echo "xrandr failed to run - X may not be ready"
         
         # Get the current output name
         OUTPUT=$(xrandr | grep " connected" | cut -d' ' -f1 | head -n 1)
@@ -154,17 +161,28 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
         if [ -n "$OUTPUT" ]; then
             echo "Using display output: $OUTPUT"
             
-            # Add and set the mode
-            xrandr --newmode "$MODE_NAME" $MODELINE || echo "Mode may already exist"
-            xrandr --addmode $OUTPUT "$MODE_NAME" || echo "Mode may already be added"
-            xrandr --output $OUTPUT --mode "$MODE_NAME"
+            # First try to set the resolution directly if it's already available
+            if xrandr | grep "${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}" > /dev/null; then
+                echo "Resolution ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} already available, setting it..."
+                xrandr --output $OUTPUT --mode "${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}"
+            elif [ -n "$MODELINE" ]; then
+                # If not available, try to create it with the modeline
+                echo "Creating new mode: $MODE_NAME with modeline: $MODELINE"
+                xrandr --newmode "$MODE_NAME" $MODELINE || echo "Failed to create new mode (it may already exist)"
+                xrandr --addmode $OUTPUT "$MODE_NAME" || echo "Failed to add mode to output (it may already be added)"
+                xrandr --output $OUTPUT --mode "$MODE_NAME" || echo "Failed to set mode on output"
+            fi
             
-            # Verify again after xrandr configuration
+            # Verify the current resolution
             echo "Display resolution after xrandr configuration:"
             xrandr | grep -w current
         else
             echo "No connected display outputs found for xrandr configuration"
+            xrandr # Show full output for debugging
         fi
+    else
+        echo "xrandr not available - cannot configure display resolution"
+    fi
     fi
     
     # Try to start a minimal window manager (if available)
