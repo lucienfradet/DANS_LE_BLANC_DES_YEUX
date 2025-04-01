@@ -30,7 +30,7 @@ class VideoDisplay:
         self.camera_manager = camera_manager
         
         # Display parameters for Waveshare 7-inch display (default values)
-        self.window_width = 1280
+        self.window_width = 1000
         self.window_height = 800
         
         # Default camera settings
@@ -46,7 +46,7 @@ class VideoDisplay:
                 'crop_bottom': 0         # Pixels to crop from bottom
             },
             'external': {
-                'rotation': '90_counter', # '0', '90_clockwise', '90_counter', '180'
+                'rotation': '180', # '0', '90_clockwise', '90_counter', '180'
                 'position_x': 0,          # Horizontal position on screen
                 'position_y': 0,          # Vertical position on screen
                 'scale': 1.0,             # Scaling factor
