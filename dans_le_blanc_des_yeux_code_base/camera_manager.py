@@ -294,26 +294,18 @@ class CameraManager:
             )
             self.external_camera.configure(config)
             
+            # Start camera
+            self.external_camera.start()
+
+            time.sleep(1)
+
             # Set up autofocus if enabled
             if self.enable_autofocus:
                 try:
                     self.external_camera.set_controls({"AfMode": 2 ,"AfTrigger": 0})
                     print("Enabling continuous autofocus for external camera")
-                    # First check if autofocus is available
-                    # camera_properties = self.external_camera.camera_properties
-                    # if "AfMode" in camera_properties:
-                    #     from picamera2.controls import AfMode
-                    #     
-                    #     print("Enabling continuous autofocus for external camera")
-                    #     # Enable continuous autofocus
-                    #     self.external_camera.set_controls({"AfMode": AfMode.Continuous})
-                    # else:
-                    #     print("Autofocus not available on this camera")
                 except Exception as af_error:
                     print(f"Could not enable autofocus: {af_error}")
-            
-            # Start camera
-            self.external_camera.start()
             
             # Test capture
             test_frame = self.external_camera.capture_array()

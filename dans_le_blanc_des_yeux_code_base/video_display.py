@@ -30,8 +30,8 @@ class VideoDisplay:
         self.camera_manager = camera_manager
         
         # Display parameters for Waveshare 7-inch display (default values)
-        self.window_width = 1000
-        self.window_height = 800
+        self.window_width = 1024
+        self.window_height = 600
         
         # Default camera settings
         self.camera_settings = {
