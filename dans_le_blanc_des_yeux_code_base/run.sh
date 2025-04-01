@@ -141,6 +141,15 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     # xrandr --output HDMI-1 --rotate normal
     
     echo "X server is ready for display"
+
+    if [ $DISABLE_VIDEO -eq 0 ]; then
+      # Echo screen dimensions using xrandr
+      echo "Current screen dimensions:"
+      xrandr | grep -w connected | grep -o '[0-9]*x[0-9]*'
+
+      echo "Environment variables for screen dimensions:"
+      echo "Width: $WAVESHARE_WIDTH, Height: $WAVESHARE_HEIGHT"
+    fi
 fi
 
 # Set OpenCV performance optimization variables
