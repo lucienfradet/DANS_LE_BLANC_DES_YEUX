@@ -363,39 +363,28 @@ class GStreamerVideoStreamer:
         
         # Try to use hardware acceleration if available
         try:
-            # Try various hardware encoders that might be available on the Raspberry Pi
+            # Based on available encoders, prioritize the ones we have
             try_encoders = [
-                # omxh264enc - older Raspberry Pi models
+                # avenc_h264_omx - OpenMAX IL encoder for Raspberry Pi
                 f"appsrc name=src is-live=true format=GST_FORMAT_TIME ! "
                 f"videoconvert ! video/x-raw,format=I420 ! "
-                f"omxh264enc control-rate=variable target-bitrate={self.bitrate} ! "
+                f"avenc_h264_omx bitrate={self.bitrate} ! "
                 f"video/x-h264,profile=main ! "
                 f"rtph264pay config-interval=1 ! "
                 f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false",
                 
-                # v4l2h264enc - V4L2 hardware encoder
+                # Software encoders as fallback
                 f"appsrc name=src is-live=true format=GST_FORMAT_TIME ! "
                 f"videoconvert ! video/x-raw,format=I420 ! "
-                f"v4l2h264enc extra-controls=controls,h264_profile=4,video_bitrate={self.bitrate} ! "
+                f"x264enc tune=zerolatency bitrate={self.bitrate//1000} speed-preset=superfast ! "
                 f"video/x-h264,profile=main ! "
                 f"rtph264pay config-interval=1 ! "
                 f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false",
                 
-                # nvh264enc - NVIDIA hardware encoder (if using Jetson)
+                # Even simpler pipeline as last resort
                 f"appsrc name=src is-live=true format=GST_FORMAT_TIME ! "
-                f"videoconvert ! video/x-raw,format=I420 ! "
-                f"nvh264enc bitrate={self.bitrate//1000} ! "
-                f"video/x-h264,profile=main ! "
-                f"rtph264pay config-interval=1 ! "
-                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false",
-                
-                # vaapih264enc - For systems with VA-API support
-                f"appsrc name=src is-live=true format=GST_FORMAT_TIME ! "
-                f"videoconvert ! video/x-raw,format=I420 ! "
-                f"vaapih264enc rate-control=cbr bitrate={self.bitrate//1000} ! "
-                f"video/x-h264,profile=main ! "
-                f"rtph264pay config-interval=1 ! "
-                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false",
+                f"videoconvert ! x264enc tune=zerolatency ! rtph264pay ! "
+                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false"
             ]
             
             # Try each encoder until one works
