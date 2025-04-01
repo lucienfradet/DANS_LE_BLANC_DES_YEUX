@@ -46,7 +46,7 @@ class VideoDisplay:
                 'crop_bottom': 0         # Pixels to crop from bottom
             },
             'external': {
-                'rotation': '180', # '0', '90_clockwise', '90_counter', '180'
+                'rotation': '0', # '0', '90_clockwise', '90_counter', '180'
                 'position_x': 0,          # Horizontal position on screen
                 'position_y': 0,          # Vertical position on screen
                 'scale': 1.0,             # Scaling factor

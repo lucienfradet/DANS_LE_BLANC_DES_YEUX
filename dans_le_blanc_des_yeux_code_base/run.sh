@@ -91,6 +91,19 @@ fi
 if [ $DISABLE_VIDEO -eq 0 ]; then
     echo "Setting up X server for Waveshare 7-inch display (1280x800)..."
     
+    # Define display dimensions
+    DISPLAY_WIDTH=1280
+    DISPLAY_HEIGHT=800
+    
+    # Check if cvt command exists (for modeline generation)
+    if command_exists cvt; then
+        # Create a modeline for the display resolution
+        echo "Generating modeline for ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}..."
+        MODELINE=$(cvt $DISPLAY_WIDTH $DISPLAY_HEIGHT 60 | grep Modeline | cut -d'"' -f 2-)
+        MODE_NAME=$(echo $MODELINE | cut -d' ' -f 1)
+        echo "Generated modeline: $MODE_NAME ($MODELINE)"
+    fi
+    
     # Kill any existing X servers to avoid conflicts
     if [ "$(id -u)" -eq 0 ]; then
         pkill X || true
@@ -98,12 +111,12 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
         sudo pkill X || true
     fi
     
-    # Start X server with sudo
-    echo "Starting X server..."
+    # Start X server with sudo and specific dimensions
+    echo "Starting X server with ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} resolution..."
     if [ "$(id -u)" -eq 0 ]; then
-        X :0 -nocursor -keeptty -noreset -ac &
+        X :0 -nocursor -keeptty -noreset -ac -screen 0 ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}x24 &
     else
-        sudo X :0 -nocursor -keeptty -noreset -ac &
+        sudo X :0 -nocursor -keeptty -noreset -ac -screen 0 ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}x24 &
     fi
     X_PID=$!
     
@@ -124,8 +137,35 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     xset s noblank
     
     # Set environment variables for Waveshare display dimensions
-    export WAVESHARE_WIDTH=1280
-    export WAVESHARE_HEIGHT=800
+    export WAVESHARE_WIDTH=$DISPLAY_WIDTH
+    export WAVESHARE_HEIGHT=$DISPLAY_HEIGHT
+    
+    # Verify the current resolution
+    echo "Current display resolution:"
+    xrandr | grep -w current
+    
+    # If we have a modeline and xrandr is available, try to explicitly set the resolution
+    if [ -n "$MODELINE" ] && command_exists xrandr; then
+        echo "Configuring display with xrandr..."
+        
+        # Get the current output name
+        OUTPUT=$(xrandr | grep " connected" | cut -d' ' -f1 | head -n 1)
+        
+        if [ -n "$OUTPUT" ]; then
+            echo "Using display output: $OUTPUT"
+            
+            # Add and set the mode
+            xrandr --newmode "$MODE_NAME" $MODELINE || echo "Mode may already exist"
+            xrandr --addmode $OUTPUT "$MODE_NAME" || echo "Mode may already be added"
+            xrandr --output $OUTPUT --mode "$MODE_NAME"
+            
+            # Verify again after xrandr configuration
+            echo "Display resolution after xrandr configuration:"
+            xrandr | grep -w current
+        else
+            echo "No connected display outputs found for xrandr configuration"
+        fi
+    fi
     
     # Try to start a minimal window manager (if available)
     # This helps ensure we get true fullscreen with no decorations
@@ -136,9 +176,6 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
         echo "Starting matchbox with no decorations..."
         matchbox-window-manager -use_titlebar no &
     fi
-    
-    # Configure rotation of display if needed (uncomment if required)
-    # xrandr --output HDMI-1 --rotate normal
     
     echo "X server is ready for display"
 fi
