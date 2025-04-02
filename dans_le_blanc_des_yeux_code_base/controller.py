@@ -16,8 +16,7 @@ import threading
 from osc_handler import run_osc_handler
 from motor import MotorController
 from camera_manager import CameraManager
-from gstreamer_video_streamer import GStreamerVideoStreamer
-# from video_streamer import VideoStreamer
+from video_streamer import VideoStreamer
 from video_display import VideoDisplay
 from debug_visualizer import TerminalVisualizer
 
@@ -199,8 +198,7 @@ if __name__ == "__main__":
             
             # Initialize video streamer
             print("Starting video streamer...")
-            # video_streamer = VideoStreamer(camera_manager, remote_ip)
-            video_streamer = GStreamerVideoStreamer(camera_manager, remote_ip)
+            video_streamer = VideoStreamer(camera_manager, remote_ip)
             video_streamer.start()
             
             # Initialize video display

@@ -223,7 +223,7 @@ class VideoDisplay:
             print(f"Error adding default settings to config: {e}")
     
     def start(self) -> bool:
-        """Start the video display system with enhanced fullscreen handling."""
+        """Start the video display system."""
         print("Starting video display...")
         
         # Try to create window with proper fullscreen setup
@@ -231,14 +231,13 @@ class VideoDisplay:
             # First destroy any existing windows with the same name
             try:
                 cv2.destroyWindow(self.window_name)
-            except:
+            except():
                 pass  # Silently ignore if window doesn't exist
             
-            # Create window with specific flags for fullscreen
+            # Create window with specific flags
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
             
-            # Force the window to take up the entire screen resolution
-            # This is critical for fullscreen display
+            # Set window size to match screen size
             cv2.resizeWindow(self.window_name, self.window_width, self.window_height)
             
             # Set window position to top-left corner
@@ -247,22 +246,16 @@ class VideoDisplay:
             # Make sure the window is visible with black frame
             black_frame = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
             cv2.imshow(self.window_name, black_frame)
+            cv2.waitKey(1)
             
-            # This is important - wait with a small delay to ensure the window is created
-            cv2.waitKey(100)
-            
-            # Force the window into fullscreen mode
+            # Set fullscreen if enabled
             if self.display_options['fullscreen']:
-                print("Setting fullscreen mode")
                 cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                # Double-check fullscreen was applied
-                fs_state = cv2.getWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN)
-                print(f"Fullscreen state: {fs_state}")
             
             # Try to set window to stay on top
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_TOPMOST, 1)
             
-            # Wait for window to settle
+            # Wait a moment for window to settle
             time.sleep(0.5)
             
             print("Window created successfully")
@@ -443,7 +436,7 @@ class VideoDisplay:
         cv2.rectangle(frame, (x_offset, y_offset), (x_offset + w, y_offset + h), (0, 255, 0), 1)
     
     def _display_loop(self) -> None:
-        """Main display loop with improved fullscreen handling."""
+        """Main display loop."""
         print("Display loop started")
         
         # Check if display is available
@@ -467,12 +460,8 @@ class VideoDisplay:
                 # Make sure window is in fullscreen mode if enabled
                 if self.display_options['fullscreen']:
                     cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                    # Add extra waitKey to ensure the property change is processed
-                    cv2.waitKey(1)
             
             last_state_debug = None
-            # Counter for periodic fullscreen check
-            fullscreen_check_counter = 0
             
             while self.running:
                 frame_start_time = time.time()
@@ -525,16 +514,9 @@ class VideoDisplay:
                         cv2.imshow(self.window_name, display_frame)
                         cv2.waitKey(1)
                         
-                        # Check and enforce fullscreen periodically
-                        fullscreen_check_counter += 1
-                        if self.display_options['fullscreen'] and fullscreen_check_counter >= 30:
-                            # Check if we're still in fullscreen mode
-                            fs_state = cv2.getWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN)
-                            if fs_state != cv2.WINDOW_FULLSCREEN:
-                                print("Fullscreen mode lost, restoring...")
-                                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                                cv2.waitKey(1)
-                            fullscreen_check_counter = 0
+                        # Make sure fullscreen is maintained
+                        if self.display_options['fullscreen'] and frame_counter % 30 == 0:
+                            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                     
                     last_render_time = frame_start_time
                     
