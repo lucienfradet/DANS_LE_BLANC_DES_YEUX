@@ -30,7 +30,7 @@ def toggle_visualizer():
     global visualizer, visualizer_active
     
     if visualizer is None:
-        # Initialize visualizer if it doesn't exist
+        # Initialize visualizer if it doesn't exist.
         visualizer = TerminalVisualizer()
     
     if visualizer_active:
