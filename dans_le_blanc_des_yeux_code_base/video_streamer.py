@@ -48,7 +48,7 @@ class VideoStreamer:
         # Frame dimensions and quality
         self.frame_width = 640
         self.frame_height = 480
-        self.jpeg_quality = 80  # 0-100, higher is better quality
+        self.jpeg_quality = 30  # 0-100, higher is better quality
         
         # Frame handling
         self.buffer_size = 65536
