@@ -1,6 +1,6 @@
 """
-Enhanced OSC communication handler with improved connection reliability
-and smarter retry logic for Dans le Blanc des Yeux installation.
+OSC communication handler with corrected port configuration to ensure
+both devices can properly communicate with each other.
 """
 
 import time
@@ -8,7 +8,6 @@ import threading
 import socket
 import subprocess
 from typing import Dict, Any, Optional, Callable, List, Tuple
-import random  # For jittered retry
 
 from pythonosc.udp_client import SimpleUDPClient
 from pythonosc.dispatcher import Dispatcher
@@ -19,12 +18,9 @@ from serial_handler import SerialHandler, parse_serial_data
 
 # Constants
 LOCAL_SERVER_PORT = 8888           # Port to listen on
-REMOTE_SERVER_PORT = 8888          # Port the remote device is listening on (both use the same port)
-HEARTBEAT_INTERVAL = 2.0           # seconds (reduced from 3.0)
-CONNECTION_TIMEOUT = 7.0           # seconds (increased from 5.0)
-INITIAL_RETRY_INTERVAL = 0.5       # seconds for initial connection attempts
-MAX_RETRY_INTERVAL = 5.0           # maximum seconds between retries
-STARTUP_GRACE_PERIOD = 15.0        # seconds of more aggressive connection attempts during startup
+REMOTE_SERVER_PORT = 8888          # Port the remote device is listening on (changed from 9999!)
+HEARTBEAT_INTERVAL = 3.0           # seconds
+CONNECTION_TIMEOUT = 10.0          # seconds
 
 class OSCHandler:
     def __init__(self, remote_ip: str, serial_handler: SerialHandler):
@@ -40,7 +36,6 @@ class OSCHandler:
         self.remote_connected = False
         self.last_heartbeat_received = 0
         self.heartbeat_lock = threading.Lock()
-        self.startup_time = time.time()
         
         # Threads
         self.threads = []
@@ -49,10 +44,6 @@ class OSCHandler:
         
         # Callbacks
         self.connection_status_callback = None
-        
-        # Retry tracking for exponential backoff
-        self.connection_attempts = 0
-        self.last_attempt_time = 0
         
         # Display network information
         self._display_network_info()
@@ -189,8 +180,8 @@ class OSCHandler:
             print(f"Failed to initialize OSC client: {str(e)}")
             return False
     
-    def _start_osc_server(self, max_retries: int = 5) -> bool:  # Increased from 3 to 5
-        """Start OSC server with improved retry mechanism."""
+    def _start_osc_server(self, max_retries: int = 3) -> bool:
+        """Start OSC server with retry mechanism."""
         for attempt in range(max_retries):
             try:
                 print(f"Starting OSC server on port {LOCAL_SERVER_PORT} (Attempt {attempt+1}/{max_retries})")
@@ -229,20 +220,9 @@ class OSCHandler:
                     print("   Port is already in use. Another instance might be running.")
                     print(f"   Try running: 'sudo lsof -i :{LOCAL_SERVER_PORT}' to check")
                     
-                    # Try to kill the process using the port
-                    try:
-                        if 'posix' in socket.module.__name__:
-                            subprocess.call(f"kill $(lsof -t -i:{LOCAL_SERVER_PORT})", shell=True)
-                            print("   Attempted to kill process using this port")
-                            time.sleep(1)  # Wait for process to die
-                    except:
-                        pass
-                    
                 if attempt < max_retries - 1:
-                    # Use jittered backoff for retry timing
-                    delay = min(1.0 * (2 ** attempt), 5) * (0.5 + 0.5 * random.random())
-                    print(f"   Retrying in {delay:.1f} seconds...")
-                    time.sleep(delay)
+                    print(f"   Retrying in 2 seconds...")
+                    time.sleep(2)
         
         print(f"❌ Failed to start OSC server after {max_retries} attempts")
         return False
@@ -302,61 +282,28 @@ class OSCHandler:
             self._update_connection_status(True)
     
     def _connection_manager_loop(self) -> None:
-        """Continuously manage client connection with exponential backoff."""
-        last_attempt_time = 0
-        retry_interval = INITIAL_RETRY_INTERVAL
-        
+        """Continuously manage client connection."""
         while not self.stop_event.is_set():
-            current_time = time.time()
-            
             # If we're not connected, try to establish connection
             if not self.remote_connected:
-                # Determine if we should try to connect now
-                should_connect = False
-                
-                # During startup, use more aggressive retry timing
-                is_startup_phase = (current_time - self.startup_time) < STARTUP_GRACE_PERIOD
-                
-                if is_startup_phase:
-                    # During startup, retry quickly
-                    if current_time - last_attempt_time >= INITIAL_RETRY_INTERVAL:
-                        should_connect = True
+                if self.osc_client is None:
+                    print("Attempting to create OSC client...")
+                    self._init_osc_client()
                 else:
-                    # After startup, use exponential backoff
-                    if current_time - last_attempt_time >= retry_interval:
-                        should_connect = True
-                
-                if should_connect:
-                    print(f"Attempting connection to remote device ({self.connection_attempts + 1})")
-                    last_attempt_time = current_time
-                    self.connection_attempts += 1
-                    
-                    if self.osc_client is None:
-                        self._init_osc_client()
-                    else:
-                        # Try to send a heartbeat to establish connection
-                        try:
-                            self.osc_client.send_message("/heartbeat", [1])
-                        except Exception:
-                            # This is expected if remote isn't available
-                            pass
-                    
-                    # Update retry interval with exponential backoff
-                    if not is_startup_phase:
-                        # Exponential backoff with jitter
-                        retry_interval = min(INITIAL_RETRY_INTERVAL * (1.5 ** self.connection_attempts), MAX_RETRY_INTERVAL)
-                        # Add jitter (±20%)
-                        retry_interval *= (0.8 + 0.4 * random.random())
-                    
-                    # Log the next retry time
-                    print(f"Next connection attempt in {retry_interval:.1f} seconds")
-            else:
-                # We're connected, reset retry parameters
-                self.connection_attempts = 0
-                retry_interval = INITIAL_RETRY_INTERVAL
+                    # Try to send a heartbeat to establish connection
+                    try:
+                        print("Sending probe heartbeat...")
+                        self.osc_client.send_message("/heartbeat", [1])
+                    except Exception as e:
+                        # This is expected if remote isn't available
+                        pass
             
-            # Sleep for a short interval to check stop flag frequently
-            time.sleep(0.1)
+            # Sleep for a moderate interval between connection attempts
+            # We don't want to flood the network but want to be responsive
+            for _ in range(50):  # 5 seconds with 100ms checks
+                if self.stop_event.is_set():
+                    break
+                time.sleep(0.1)
     
     def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats to remote device."""
@@ -366,25 +313,19 @@ class OSCHandler:
         while not self.stop_event.is_set():
             if self.osc_client:
                 try:
-                    # Stagger heartbeats slightly to avoid exact timing overlap
-                    jittered_interval = HEARTBEAT_INTERVAL * (0.9 + 0.2 * random.random())
-                    
                     self.osc_client.send_message("/heartbeat", [1])
                     heartbeat_count += 1
-                    
-                    # Log every 10 heartbeats
-                    if heartbeat_count % 10 == 0:
+                    if heartbeat_count % 10 == 0:  # Log every 10 heartbeats
                         print(f"💓 Sent heartbeat #{heartbeat_count}")
                 except Exception:
                     # Expected to fail sometimes if remote is down
                     pass
             
             # Sleep for heartbeat interval, checking stop flag periodically
-            sleep_interval = min(0.1, HEARTBEAT_INTERVAL / 10)
-            for _ in range(int(jittered_interval / sleep_interval)):
+            for _ in range(int(HEARTBEAT_INTERVAL * 10)):
                 if self.stop_event.is_set():
                     break
-                time.sleep(sleep_interval)
+                time.sleep(0.1)
     
     def _connection_monitor_loop(self) -> None:
         """Monitor connection status based on heartbeats."""
@@ -422,20 +363,10 @@ class OSCHandler:
     
     def _serial_read_loop(self) -> None:
         """Read data from Arduino and send via OSC."""
-        serial_retry_interval = 1.0  # Initial retry interval
-        max_serial_retry_interval = 5.0
-        serial_retries = 0
-        
         while not self.stop_event.is_set():
             if not self.serial_handler.connected:
-                # Use exponential backoff for serial retries too
-                sleep_time = min(serial_retry_interval * (1.5 ** serial_retries), max_serial_retry_interval)
-                serial_retries += 1
-                time.sleep(sleep_time)
+                time.sleep(1)
                 continue
-            else:
-                # Reset retry counter when connected
-                serial_retries = 0
             
             # Only request data if we're not moving
             local_state = system_state.get_local_state()
@@ -465,23 +396,10 @@ class OSCHandler:
 
 def run_osc_handler(remote_ip: str, arduino_port: str = "/dev/ttyACM0") -> Tuple[OSCHandler, SerialHandler]:
     """Initialize and run the OSC handler with given configuration."""
-    # Try multiple Arduino ports in case the default one doesn't work
-    arduino_ports = [arduino_port, "/dev/ttyACM1", "/dev/ttyUSB0", "/dev/ttyUSB1"]
-    
-    serial_handler = None
-    for port in arduino_ports:
-        try:
-            print(f"Trying Arduino port: {port}")
-            serial_handler = SerialHandler(port=port, baudrate=9600)
-            if serial_handler.connect():
-                print(f"Connected to Arduino on port {port}")
-                break
-        except Exception as e:
-            print(f"Failed to connect on port {port}: {e}")
-    
-    if serial_handler is None or not serial_handler.connected:
-        print("Warning: Failed to connect to Arduino on any port. Continuing anyway...")
-        serial_handler = SerialHandler(port=arduino_port, baudrate=9600)  # Use default port as fallback
+    # Initialize serial handler
+    serial_handler = SerialHandler(port=arduino_port, baudrate=9600)
+    if not serial_handler.connect():
+        print("Warning: Failed to connect to Arduino. Continuing anyway...")
     
     # Initialize OSC handler
     osc_handler = OSCHandler(remote_ip, serial_handler)
