@@ -77,183 +77,86 @@ def signal_handler(sig, frame):
     print("\nShutting down... Please wait.")
     stop_input_thread = True
     
-    # Stop all components
-    if 'osc_handler' in globals():
-        osc_handler.stop()
-    if 'serial_handler' in globals():
-        serial_handler.disconnect()
-    if 'motor_controller' in globals():
-        motor_controller.stop()
-    if 'camera_manager' in globals():
-        camera_manager.stop()
-    if 'video_streamer' in globals():
-        video_streamer.stop()
-    if 'video_display' in globals():
-        video_display.stop()
+    # First, set stop flags on all components without waiting for joins
     if 'audio_system' in globals():
-        audio_system.stop()
+        try:
+            # Just set stop flags without waiting for threads
+            audio_system.running = False
+            audio_system.stop_event.set()
+        except Exception as e:
+            print(f"Error signaling audio system: {e}")
     
-    # Stop visualizer if it's running
+    if 'osc_handler' in globals():
+        try:
+            osc_handler.running = False
+            if hasattr(osc_handler, 'stop_event'):
+                osc_handler.stop_event.set()
+        except Exception as e:
+            print(f"Error signaling OSC handler: {e}")
+    
+    if 'video_streamer' in globals():
+        try:
+            video_streamer.running = False
+        except Exception as e:
+            print(f"Error signaling video streamer: {e}")
+    
+    if 'video_display' in globals():
+        try:
+            video_display.running = False
+        except Exception as e:
+            print(f"Error signaling video display: {e}")
+    
+    if 'motor_controller' in globals():
+        try:
+            motor_controller.running = False
+        except Exception as e:
+            print(f"Error signaling motor controller: {e}")
+    
+    # Wait a moment for threads to notice stop flags
+    time.sleep(0.5)
+    
+    # Now actually stop components in a specific order
+    # Stop visualization first as it's least critical
     global visualizer, visualizer_active
     if visualizer is not None and visualizer_active:
-        visualizer.stop()
+        try:
+            visualizer.stop()
+        except Exception as e:
+            print(f"Error stopping visualizer: {e}")
+    
+    # Stop components in dependency order
+    components_to_stop = [
+        ('camera_manager', 'stop'),
+        ('video_display', 'stop'),
+        ('video_streamer', 'stop'),
+        ('audio_system', 'stop'),
+        ('motor_controller', 'stop'),
+        ('serial_handler', 'disconnect'),
+        ('osc_handler', 'stop')
+    ]
+    
+    for component_name, method_name in components_to_stop:
+        if component_name in globals():
+            try:
+                component = globals()[component_name]
+                method = getattr(component, method_name)
+                method()
+            except Exception as e:
+                print(f"Error stopping {component_name}: {e}")
     
     print("Shutdown complete.")
     sys.exit(0)
 
-if __name__ == "__main__":
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Dans le Blanc des Yeux Controller')
-    parser.add_argument('--visualize', action='store_true', help='Enable terminal visualization')
-    parser.add_argument('--disable-video', action='store_true', help='Disable video components')
-    parser.add_argument('--disable-audio', action='store_true', help='Disable audio components')
-    args = parser.parse_args()
-    
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Load configuration
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    
-    try:
-        # Get remote IP from config
-        remote_ip = config['ip']['pi-ip']
-        print(f"Using remote IP: {remote_ip}")
-        
-        # Initialize visualizer but only start if requested via command line
-        visualizer = TerminalVisualizer()
-        visualizer_active = False
-        
-        if args.visualize:
-            print("Starting terminal visualizer...")
-            visualizer.start()
-            visualizer_active = True
-        
-        # Start input monitor thread
-        input_thread = threading.Thread(target=input_monitor)
-        input_thread.daemon = True
-        input_thread.start()
-        
-        # Start OSC handler
-        osc_handler, serial_handler = run_osc_handler(remote_ip)
-        
-        # Initialize and start motor controller with parameters from config
-        print("Starting motor controller...")
-        
-        # Get motor settings from config or use defaults if not present
-        motor_params = {}
-        if 'motor' in config:
-            try:
-                motor_params['required_duration'] = config.getfloat('motor', 'required_duration', fallback=0.8)
-                motor_params['check_interval'] = config.getfloat('motor', 'check_interval', fallback=0.1)
-                motor_params['motion_timeout'] = config.getfloat('motor', 'motion_timeout', fallback=2.0)
-                print(f"Using motor settings from config: {motor_params}")
-            except (ValueError, configparser.Error) as e:
-                print(f"Error reading motor config: {e}. Using defaults.")
-        
-        # Create motor controller with config parameters
-        motor_controller = MotorController(serial_handler, **motor_params)
-        
-        # Set minimum interval between movements if specified in config
-        if 'motor' in config and 'movement_min_interval' in config['motor']:
-            try:
-                interval = config.getfloat('motor', 'movement_min_interval', fallback=0.5)
-                motor_controller.movement_min_interval = interval
-                print(f"Set movement_min_interval to {interval} seconds")
-            except (ValueError, configparser.Error):
-                pass
-                
-        motor_controller.start()
-        
-        # Initialize video components if not disabled
-        if not args.disable_video:
-            # Get video settings from config or use defaults
-            video_params = {}
-            if 'video' in config:
-                try:
-                    # Add any video-specific configuration here
-                    video_params['internal_camera_id'] = config.getint('video', 'internal_camera_id', fallback=0)
-                    video_params['external_camera_id'] = config.getint('video', 'external_camera_id', fallback=1)
-                    print(f"Using video settings from config: {video_params}")
-                except (ValueError, configparser.Error) as e:
-                    print(f"Error reading video config: {e}. Using defaults.")
-            
-            # Check if display is available
-            has_display = "DISPLAY" in os.environ and os.environ["DISPLAY"]
-            if not has_display:
-                print("WARNING: No display detected (DISPLAY environment variable not set)")
-                print("Video display component may not work properly")
-            
-            # Initialize enhanced camera manager with improved error handling
-            print("Starting camera manager...")
-            camera_manager = CameraManager(
-                internal_camera_id=video_params.get('internal_camera_id', 0),
-                external_camera_id=video_params.get('external_camera_id', 1),
-                disable_missing=True,  # Continue even if cameras aren't available
-                internal_frame_width=1024,
-                internal_frame_height=600,
-                external_frame_width=1024,
-                external_frame_height=600,
-                enable_autofocus=True
-            )
-            if not camera_manager.start():
-                print("Warning: Failed to start camera manager. Video functionality may be limited.")
-            
-            # Initialize video streamer
-            print("Starting video streamer...")
-            video_streamer = VideoStreamer(camera_manager, remote_ip)
-            video_streamer.start()
-            
-            # Initialize video display
-            if has_display:
-                print("Starting video display...")
-                try:
-                    video_display = VideoDisplay(video_streamer, camera_manager)
-                    video_display.start()
-                except Exception as e:
-                    print(f"Error starting video display: {e}")
-                    print("Video display functionality will be limited")
-            else:
-                print("Skipping video display initialization (no display available)")
-        else:
-            print("Video components disabled by command line argument")
-        
-        # Initialize audio components if not disabled
-        if not args.disable_audio:
-            # Get audio settings from config or use defaults
-            audio_params = {}
-            if 'audio' in config:
-                try:
-                    # Any audio-specific configuration can be added here
-                    print(f"Using audio settings from config: {audio_params}")
-                except (ValueError, configparser.Error) as e:
-                    print(f"Error reading audio config: {e}. Using defaults.")
-            
-            # Initialize audio system
-            print("Starting audio system...")
-            try:
-                audio_system = AudioSystem(remote_ip)
-                if not audio_system.start():
-                    print("Warning: Failed to start audio system. Audio functionality will be limited.")
-            except Exception as e:
-                print(f"Error starting audio system: {e}")
-                print("Audio functionality will be limited")
-        else:
-            print("Audio components disabled by command line argument")
-        
-        # Keep main thread alive while the input thread handles commands
-        while True:
-            time.sleep(1)
-            
-    except KeyboardInterrupt:
-        print("\nUser requested shutdown.")
-        signal_handler(None, None)
-    except Exception as e:
-        print(f"Fatal error: {str(e)}")
+def stop_thread_gracefully(thread, timeout=1.0):
+    """Helper function to stop a thread gracefully with timeout."""
+    if thread is not None and thread.is_alive():
         try:
-            # Try to clean up
-            signal_handler(None, None)
-        except:
-            sys.exit(1)
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                print(f"Warning: Thread {thread.name} did not terminate within timeout")
+                return False
+            return True
+        except Exception as e:
+            print(f"Error stopping thread: {e}")
+            return False
+    return True

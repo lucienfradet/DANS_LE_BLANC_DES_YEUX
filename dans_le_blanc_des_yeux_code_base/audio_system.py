@@ -182,7 +182,7 @@ class AudioSystem:
         self.running = False
         self.stop_event.set()
         
-        # Stop and close audio streams
+        # Stop and close audio streams immediately
         if self.personal_mic_stream is not None:
             try:
                 self.personal_mic_stream.stop_stream()
@@ -207,15 +207,7 @@ class AudioSystem:
                 print(f"Error closing output stream: {e}")
             self.output_stream = None
         
-        # Terminate PyAudio
-        if self.pa is not None:
-            try:
-                self.pa.terminate()
-            except Exception as e:
-                print(f"Error terminating PyAudio: {e}")
-            self.pa = None
-        
-        # Close sockets
+        # Close sockets immediately
         if self.sender_socket is not None:
             try:
                 self.sender_socket.close()
@@ -230,11 +222,17 @@ class AudioSystem:
                 pass
             self.receiver_socket = None
         
-        # Wait for threads to finish
-        for thread in self.threads:
-            thread.join(timeout=1.0)
-        
+        # Don't join threads in the stop method - could cause deadlock
+        # Just mark them as to be terminated
         self.threads = []
+        
+        # Terminate PyAudio at the end as it's usually safe
+        if self.pa is not None:
+            try:
+                self.pa.terminate()
+            except Exception as e:
+                print(f"Error terminating PyAudio: {e}")
+            self.pa = None
             
         print("Audio system stopped")
     
