@@ -238,6 +238,9 @@ class AudioPlayback:
         if old_state != self.playback_state:
             print(f"Playback state changed from {old_state} to {self.playback_state}")
             
+            # Update system state with new audio mode
+            system_state.update_audio_state({"mode": self.playback_state})
+            
             # Clear buffers when changing state
             self._clear_buffers()
     
@@ -368,6 +371,37 @@ class AudioPlayback:
             elif state == "none":
                 # Play silence
                 pass
+            
+            # Calculate audio levels for visualization
+            if output_data and len(output_data) > 0:
+                # Convert bytes to numpy array for level calculation
+                audio_array = np.frombuffer(output_data, dtype=np.int16)
+                
+                # Reshape to separate channels
+                if len(audio_array) >= 2:
+                    audio_array = audio_array.reshape(-1, 2)
+                    
+                    # Calculate RMS value for each channel
+                    left_samples = audio_array[:, 0].astype(np.float32)
+                    right_samples = audio_array[:, 1].astype(np.float32)
+                    
+                    # Avoid division by zero
+                    if len(left_samples) > 0:
+                        left_rms = np.sqrt(np.mean(left_samples**2))
+                        # Normalize to 0-10 range (assuming 16-bit audio)
+                        left_level = int(min(10, left_rms / 3276.7))  # 32767 / 10
+                    else:
+                        left_level = 0
+                        
+                    if len(right_samples) > 0:
+                        right_rms = np.sqrt(np.mean(right_samples**2))
+                        # Normalize to 0-10 range
+                        right_level = int(min(10, right_rms / 3276.7))
+                    else:
+                        right_level = 0
+                    
+                    # Update system state with audio levels
+                    system_state.update_audio_levels(left_level, right_level)
         except Exception as e:
             print(f"Error in audio callback: {e}")
         
@@ -414,7 +448,6 @@ class AudioPlayback:
                     self.stream = None
             
             print("Playback loop stopped")
-
 
 # Test function for the audio playback
 def test_audio_playback():

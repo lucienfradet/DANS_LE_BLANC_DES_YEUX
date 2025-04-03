@@ -1,6 +1,7 @@
 """
 Terminal-based visualization for Dans le Blanc des Yeux installation.
 Designed to work over SSH connections without requiring a GUI.
+Enhanced with audio state visualization.
 """
 
 import time
@@ -20,6 +21,14 @@ class TerminalVisualizer:
         
         # Track last movement commands
         self.last_motor_command = {"y": 0, "z": 0, "timestamp": 0}
+        
+        # Audio visualization data
+        self.audio_state = {
+            "mode": "none",              # Current audio playback mode
+            "left_level": 0,             # Left channel audio level (0-10)
+            "right_level": 0,            # Right channel audio level (0-10)
+            "last_update": 0             # Last time audio levels were updated
+        }
         
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
@@ -61,6 +70,12 @@ class TerminalVisualizer:
             motor_cmd = system_state.get_last_motor_command()
             if motor_cmd:
                 self.last_motor_command = motor_cmd.copy()
+        
+        # Check if this is an audio state update
+        elif changed_state == "audio_state":
+            audio_state = system_state.get_audio_state()
+            if audio_state:
+                self.audio_state = audio_state.copy()
     
     def _display_loop(self):
         """Main display loop."""
@@ -148,6 +163,17 @@ class TerminalVisualizer:
         else:
             print("No motor commands sent yet".center(self.width))
         
+        # Audio State Visualization
+        print()
+        print("-" * self.width)
+        print("AUDIO STATE".center(self.width))
+        
+        # Audio playback mode
+        self._print_audio_mode()
+        
+        # Audio level meters
+        self._print_audio_levels()
+        
         # Connection status
         print()
         print("-" * self.width)
@@ -230,6 +256,100 @@ class TerminalVisualizer:
         viz.append(f"Y:{y_angle:3d}° Z:{z_angle:3d}°".center(width))
         
         return viz
+    
+    def _print_audio_mode(self):
+        """Print the current audio playback mode."""
+        mode = self.audio_state.get("mode", "none")
+        mode_desc = ""
+        mode_color = "\033[97m"  # Default to white
+        
+        if mode == "none":
+            mode_desc = "No Audio Playing"
+            mode_color = "\033[90m"  # Gray
+        elif mode == "personal_speaker_right_muted":
+            mode_desc = "Playing Personal Mic (Right Channel Muted)"
+            mode_color = "\033[94m"  # Blue
+        elif mode == "personal_speaker_left_muted":
+            mode_desc = "Playing Personal Mic (Left Channel Muted)"
+            mode_color = "\033[94m"  # Blue
+        elif mode == "global_speaker_right_muted":
+            mode_desc = "Playing Global Mic (Right Channel Muted)"
+            mode_color = "\033[92m"  # Green
+        elif mode == "global_speaker_left_muted":
+            mode_desc = "Playing Global Mic (Left Channel Muted)"
+            mode_color = "\033[92m"  # Green
+        
+        print(f"Mode: {mode_color}{mode_desc}\033[0m".center(self.width))
+        
+        # Describe audio rules based on pressure state
+        local_state = system_state.get_local_state()
+        remote_state = system_state.get_remote_state()
+        local_pressure = local_state.get("pressure", False)
+        remote_pressure = remote_state.get("pressure", False)
+        
+        if not local_pressure and not remote_pressure:
+            rule = "No playback when neither device has pressure"
+        elif local_pressure and not remote_pressure:
+            rule = "Personal mic with muted channel when local has pressure"
+        elif not local_pressure and remote_pressure:
+            rule = "Global mic with muted channel when remote has pressure"
+        else:  # both have pressure
+            rule = "Personal mic with muted channel when both have pressure"
+            
+        print(f"({rule})".center(self.width))
+        print()
+    
+    def _print_audio_levels(self):
+        """Print audio level meter visualization."""
+        # Get current levels
+        left_level = self.audio_state.get("left_level", 0)
+        right_level = self.audio_state.get("right_level", 0)
+        
+        # Update decay effect - reduce levels over time if not updated recently
+        current_time = time.time()
+        time_since_update = current_time - self.audio_state.get("last_update", 0)
+        if time_since_update > 0.1:  # Apply decay after 100ms
+            decay_amount = int(time_since_update * 3)  # Decay 3 units per second
+            left_level = max(0, left_level - decay_amount)
+            right_level = max(0, right_level - decay_amount)
+        
+        # Define meter width (half the terminal width)
+        meter_width = self.width - 20  # Allow for labels
+        
+        # Create ASCII meter
+        left_fill = int((left_level / 10) * meter_width)
+        right_fill = int((right_level / 10) * meter_width)
+        
+        # Add color gradient based on level
+        def color_for_level(level, pos):
+            if level < 3:
+                return "\033[92m"  # Green for low levels
+            elif level < 7:
+                return "\033[93m"  # Yellow for medium levels
+            else:
+                return "\033[91m"  # Red for high levels
+        
+        # Print left channel meter
+        left_meter = ""
+        for i in range(meter_width):
+            if i < left_fill:
+                color = color_for_level(left_level, i)
+                left_meter += f"{color}█\033[0m"
+            else:
+                left_meter += "░"
+                
+        # Print right channel meter
+        right_meter = ""
+        for i in range(meter_width):
+            if i < right_fill:
+                color = color_for_level(right_level, i)
+                right_meter += f"{color}█\033[0m"
+            else:
+                right_meter += "░"
+        
+        # Display meters with labels
+        print(f"Left  : {left_meter}")
+        print(f"Right : {right_meter}")
 
 
 def run_visualizer():
