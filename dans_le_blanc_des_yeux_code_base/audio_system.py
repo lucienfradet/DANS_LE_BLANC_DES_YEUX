@@ -502,9 +502,11 @@ class AudioSystem:
                     try:
                         samples = len(data) // 2  # 2 bytes per sample for 16-bit audio
                         if samples % 2 == 0:  # Might be stereo (2 channels)
-                            audio_data = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
+                            # Make a copy to ensure array is writable
+                            audio_data = np.frombuffer(data, dtype=np.int16).reshape(-1, 2).copy()
                         else:  # Must be mono (1 channel)
-                            mono_data = np.frombuffer(data, dtype=np.int16)
+                            # Make a copy to ensure array is writable
+                            mono_data = np.frombuffer(data, dtype=np.int16).copy()
                             # Duplicate mono to stereo for output
                             audio_data = np.column_stack((mono_data, mono_data))
                             
