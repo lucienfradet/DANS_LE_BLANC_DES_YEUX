@@ -517,6 +517,9 @@ class AudioSystem:
                             # Duplicate mono to stereo for output
                             audio_data = np.column_stack((mono_data, mono_data))
                             
+                        # Make a copy of the array to ensure it's writable
+                        audio_data = audio_data.copy()
+                        
                         # Apply channel muting based on current state
                         if self.muted_channel == 'left':
                             audio_data[:, 0] = 0  # Mute left channel
