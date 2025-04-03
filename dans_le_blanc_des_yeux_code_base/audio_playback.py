@@ -303,7 +303,7 @@ class AudioPlayback:
             audio_data: Raw audio data bytes
             mute_left: Whether to mute the left channel
             mute_right: Whether to mute the right channel
-            
+                
         Returns:
             Audio data with channel muting applied
         """
@@ -314,6 +314,9 @@ class AudioPlayback:
             
             # Convert bytes to numpy array
             audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            
+            # Create a copy to ensure we have a writeable array
+            audio_array = audio_array.copy()
             
             # Reshape to separate channels (assuming stereo)
             audio_array = audio_array.reshape(-1, 2)
