@@ -3,7 +3,7 @@ Main controller for the Dans le Blanc des Yeux installation.
 Uses SSH console input to toggle the visualizer.
 
 Usage:
-    python controller.py [--visualize] [--disable-video]
+    python controller.py [--visualize] [--disable-video] [--disable-audio]
 """
 
 import configparser
@@ -18,6 +18,8 @@ from motor import MotorController
 from camera_manager import CameraManager
 from video_streamer import VideoStreamer
 from video_display import VideoDisplay
+from audio_streamer import AudioStreamer
+from audio_playback import AudioPlayback
 from debug_visualizer import TerminalVisualizer
 
 # Global variables
@@ -88,6 +90,10 @@ def signal_handler(sig, frame):
         video_streamer.stop()
     if 'video_display' in globals():
         video_display.stop()
+    if 'audio_streamer' in globals():
+        audio_streamer.stop()
+    if 'audio_playback' in globals():
+        audio_playback.stop()
     
     # Stop visualizer if it's running
     global visualizer, visualizer_active
@@ -102,6 +108,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Dans le Blanc des Yeux Controller')
     parser.add_argument('--visualize', action='store_true', help='Enable terminal visualization')
     parser.add_argument('--disable-video', action='store_true', help='Disable video components')
+    parser.add_argument('--disable-audio', action='store_true', help='Disable audio components')
     args = parser.parse_args()
     
     # Register signal handlers for graceful shutdown
@@ -214,6 +221,34 @@ if __name__ == "__main__":
                 print("Skipping video display initialization (no display available)")
         else:
             print("Video components disabled by command line argument")
+        
+        # Initialize audio components if not disabled
+        if not args.disable_audio:
+            # Get audio settings from config or use defaults
+            audio_params = {}
+            if 'audio' in config:
+                try:
+                    # Add any audio-specific configuration here
+                    print(f"Using audio settings from config: {audio_params}")
+                except (ValueError, configparser.Error) as e:
+                    print(f"Error reading audio config: {e}. Using defaults.")
+            
+            # Initialize audio streamer
+            print("Starting audio streamer...")
+            audio_streamer = AudioStreamer(remote_ip)
+            if not audio_streamer.start():
+                print("Warning: Failed to start audio streamer. Audio functionality may be limited.")
+            
+            # Initialize audio playback
+            print("Starting audio playback...")
+            try:
+                audio_playback = AudioPlayback(audio_streamer)
+                audio_playback.start()
+            except Exception as e:
+                print(f"Error starting audio playback: {e}")
+                print("Audio playback functionality will be limited")
+        else:
+            print("Audio components disabled by command line argument")
         
         # Keep main thread alive while the input thread handles commands
         while True:

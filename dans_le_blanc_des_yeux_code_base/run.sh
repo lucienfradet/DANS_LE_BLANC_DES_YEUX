@@ -1,13 +1,15 @@
 #!/bin/bash
 
 # Script to launch Dans le Blanc des Yeux art installation for Pi 5 with ribbon cameras
-# Usage: ./run.sh [visual] [disable-video]
+# Usage: ./run.sh [visual] [disable-video] [disable-audio]
 #   visual - Enable terminal visualization (optional)
 #   disable-video - Disable video components (optional)
+#   disable-audio - Disable audio components (optional)
 
 # Parse arguments
 ENABLE_VISUAL=0
 DISABLE_VIDEO=0
+DISABLE_AUDIO=0
 for arg in "$@"
 do
     if [ "$arg" == "visual" ]; then
@@ -17,6 +19,10 @@ do
     if [ "$arg" == "disable-video" ]; then
         DISABLE_VIDEO=1
         echo "Video components disabled"
+    fi
+    if [ "$arg" == "disable-audio" ]; then
+        DISABLE_AUDIO=1
+        echo "Audio components disabled"
     fi
 done
 
@@ -55,7 +61,7 @@ fi
 
 # Install Python requirements using apt where possible
 echo "Installing Python requirements..."
-sudo apt install -y python3-pip python3-numpy python3-serial python3-opencv
+sudo apt install -y python3-pip python3-numpy python3-serial python3-opencv python3-pyaudio
 
 # For packages not available via apt, use pip with requirements file
 pip3 install -r requirements.txt 2>/dev/null || echo "Some pip packages may not have installed. This is okay if they're available via apt."
@@ -68,6 +74,22 @@ if [ ! -e "/dev/ttyACM0" ]; then
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
+    fi
+fi
+
+# Check audio devices if audio is enabled
+if [ $DISABLE_AUDIO -eq 0 ]; then
+    echo "Checking audio devices..."
+    
+    # Try to list audio devices
+    if command_exists arecord; then
+        echo "Audio recording devices:"
+        arecord -l
+    fi
+    
+    if command_exists aplay; then
+        echo "Audio playback devices:"
+        aplay -l
     fi
 fi
 
@@ -152,6 +174,39 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     fi
 fi
 
+# Set up audio settings if audio is enabled
+if [ $DISABLE_AUDIO -eq 0 ]; then
+    echo "Setting up audio devices..."
+    
+    # Unmute all audio devices
+    if command_exists amixer; then
+        # Try to unmute master volume
+        amixer sset Master unmute >/dev/null 2>&1 || true
+        amixer sset Master 80% >/dev/null 2>&1 || true
+        
+        # Try to unmute any capture devices
+        amixer sset Capture unmute >/dev/null 2>&1 || true
+        amixer sset Capture 80% >/dev/null 2>&1 || true
+        
+        # Try to set TX 96Khz audio device unmuted if available
+        amixer -c 3 sset 'Speaker' unmute >/dev/null 2>&1 || true
+        amixer -c 3 sset 'Speaker' 80% >/dev/null 2>&1 || true
+        amixer -c 3 sset 'Mic' unmute >/dev/null 2>&1 || true
+        amixer -c 3 sset 'Mic' 80% >/dev/null 2>&1 || true
+    fi
+    
+    # Set PulseAudio volume levels if PulseAudio is running
+    if command_exists pactl; then
+        # Try to set default sink volume
+        pactl set-sink-volume @DEFAULT_SINK@ 80% >/dev/null 2>&1 || true
+        pactl set-sink-mute @DEFAULT_SINK@ 0 >/dev/null 2>&1 || true
+        
+        # Try to set default source volume
+        pactl set-source-volume @DEFAULT_SOURCE@ 80% >/dev/null 2>&1 || true
+        pactl set-source-mute @DEFAULT_SOURCE@ 0 >/dev/null 2>&1 || true
+    fi
+fi
+
 # Set OpenCV performance optimization variables
 export OPENCV_VIDEOIO_PRIORITY_MSMF=0       # Disable Microsoft Media Foundation
 export OPENCV_VIDEOIO_PRIORITY_INTEL_MFX=0  # Disable Intel Media SDK
@@ -170,14 +225,18 @@ if [ $ENABLE_VISUAL -eq 1 ]; then
     ARGS="$ARGS --visualize"
 fi
 
+if [ $DISABLE_VIDEO -eq 1 ]; then
+    ARGS="$ARGS --disable-video"
+fi
+
+if [ $DISABLE_AUDIO -eq 1 ]; then
+    ARGS="$ARGS --disable-audio"
+fi
+
 if [ $DISABLE_VIDEO -eq 0 ]; then
     # Make sure X has proper time to initialize fully
     echo "Waiting for X server to fully initialize..."
     sleep 2
-fi
-
-if [ $DISABLE_VIDEO -eq 1 ]; then
-    ARGS="$ARGS --disable-video"
 fi
 
 # Run the application
