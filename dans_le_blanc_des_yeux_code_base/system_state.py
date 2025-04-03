@@ -115,6 +115,36 @@ class SystemState:
         
         # Notify observers of motor command
         self._notify_observers("motor_command")
+
+    def update_audio_state(self, data: Dict[str, Any]) -> None:
+        """Update the audio state information."""
+        with self._state_lock:
+            if not hasattr(self, '_audio_state'):
+                self._audio_state = {
+                    "audio_sending": False,
+                    "audio_mic": "None",
+                    "audio_muted_channel": "both"
+                }
+            
+            changed = False
+            for key, value in data.items():
+                if key not in self._audio_state or self._audio_state[key] != value:
+                    self._audio_state[key] = value
+                    changed = True
+        
+        if changed:
+            self._notify_observers("audio")
+        
+    def get_audio_state(self) -> Dict[str, Any]:
+        """Get a copy of the audio state."""
+        with self._state_lock:
+            if not hasattr(self, '_audio_state'):
+                self._audio_state = {
+                    "audio_sending": False,
+                    "audio_mic": "None",
+                    "audio_muted_channel": "both"
+                }
+            return self._audio_state.copy()
     
     def add_observer(self, callback: Callable[[str], None]) -> None:
         """Add an observer to be notified of state changes."""

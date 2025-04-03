@@ -147,6 +147,39 @@ class TerminalVisualizer:
                 print("No recent motor commands".center(self.width))
         else:
             print("No motor commands sent yet".center(self.width))
+
+        # Audio Status
+        print()
+        print("-" * self.width)
+        print("AUDIO STATUS".center(self.width))
+
+        audio_state = system_state.get_audio_state()
+        if audio_state:
+            audio_sending = audio_state.get('audio_sending', False)
+            audio_mic = audio_state.get('audio_mic', 'None')
+            audio_muted = audio_state.get('audio_muted_channel', 'None')
+            
+            status_color = "\033[92m" if audio_sending else "\033[91m"  # Green or Red
+            status_text = "ACTIVE" if audio_sending else "INACTIVE"
+            
+            print(f"Audio Streaming: {status_color}{status_text}\033[0m".center(self.width))
+            if audio_mic != "None":
+                mic_text = f"Microphone: {audio_mic}"
+                print(mic_text.center(self.width))
+            
+            muted_text = "Muted Channels: "
+            if audio_muted == 'both':
+                muted_text += "Left & Right (Silent)"
+            elif audio_muted == 'left':
+                muted_text += "Left"
+            elif audio_muted == 'right':
+                muted_text += "Right"
+            else:
+                muted_text += "None"
+            
+            print(muted_text.center(self.width))
+        else:
+            print("Audio system not initialized".center(self.width))
         
         # Connection status
         print()
