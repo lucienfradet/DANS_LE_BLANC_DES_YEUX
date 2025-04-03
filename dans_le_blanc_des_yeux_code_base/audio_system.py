@@ -203,36 +203,40 @@ class AudioSystem:
         new_muted_channels = ["left", "right"]
         
         # Apply logic based on pressure states
-        if is_connected:
+        if is_connected or self.fallback_mode:  # In fallback mode, still handle local audio
             # Case 1: Both have pressure
             if local_pressure and remote_pressure:
                 new_streaming_mic = "personal"
                 new_muted_channels = [self.personal_speaker_mute_channel]  # Mute LEFT channel (personal)
+                print("Audio state: Both have pressure - LEFT channel muted, streaming personal mic")
                 
             # Case 2: Remote has pressure, local doesn't
             elif remote_pressure and not local_pressure:
                 new_streaming_mic = "global"
                 new_muted_channels = [self.global_speaker_mute_channel]    # Mute RIGHT channel (global)
+                print("Audio state: Remote has pressure - RIGHT channel muted, streaming global mic")
                 
             # Case 3: Local has pressure, remote doesn't
             elif local_pressure and not remote_pressure:
                 new_streaming_mic = "personal"
                 new_muted_channels = [self.personal_speaker_mute_channel]  # Mute LEFT channel (personal)
+                print("Audio state: Local has pressure - LEFT channel muted, streaming personal mic")
                 
             # Case 4: Neither has pressure
             else:
                 new_streaming_mic = "none"
                 new_muted_channels = ["left", "right"]  # Mute both channels (no playback)
+                print("Audio state: Neither has pressure - Both channels muted, no streaming")
         
         # Only update if there are changes
         if new_streaming_mic != self.streaming_mic or set(new_muted_channels) != set(self.muted_channels):
             print(f"Audio state change: streaming_mic={new_streaming_mic}, muted_channels={new_muted_channels}")
             
-            # Update muting
+            # Update muting first
             self._update_channel_muting(new_muted_channels)
             
-            # Update streaming
-            if new_streaming_mic != self.streaming_mic:
+            # Then update streaming (if we're not in fallback mode)
+            if not self.fallback_mode and new_streaming_mic != self.streaming_mic:
                 self._update_streaming(new_streaming_mic)
             
             # Update local state
@@ -242,10 +246,15 @@ class AudioSystem:
             # Update system state
             audio_state = {
                 "playing": len(new_muted_channels) < 2,  # Playing if at least one channel is unmuted
-                "streaming_mic": new_streaming_mic,
+                "streaming_mic": new_streaming_mic if not self.fallback_mode else "none",
                 "muted_channels": new_muted_channels
             }
             system_state.update_local_state({"audio": audio_state})
+            
+            # Debug message for the current state
+            playing_msg = "Playing" if len(new_muted_channels) < 2 else "Muted"
+            streaming_msg = f"Streaming {new_streaming_mic}" if new_streaming_mic != "none" and not self.fallback_mode else "Not streaming"
+            print(f"Audio state: {playing_msg}, {streaming_msg}, Muted channels: {new_muted_channels}")
     
     def _update_channel_muting(self, channels_to_mute: List[str]) -> None:
         """Update channel muting based on the list of channels to mute."""
@@ -469,20 +478,58 @@ class AudioSystem:
         except:
             pass
             
-        # Try different configurations in order
-        jack_configs = [
-            # Option 1: Standard ALSA configuration
+        # Get available sound cards
+        try:
+            aplay_output = subprocess.check_output(["aplay", "-l"], text=True)
+            print("\nDetected sound cards:")
+            print(aplay_output)
+            
+            # Look for TX 96KHz card
+            tx_card = None
+            usb_card = None
+            
+            for line in aplay_output.splitlines():
+                if "TX 96Khz" in line:
+                    # Extract card number
+                    card_match = line.split("card ")[1].split(":")[0].strip()
+                    tx_card = f"hw:{card_match}"
+                    print(f"Found TX 96Khz card: {tx_card}")
+                elif "USB Audio Device" in line:
+                    card_match = line.split("card ")[1].split(":")[0].strip()
+                    usb_card = f"hw:{card_match}"
+                    print(f"Found USB Audio Device card: {usb_card}")
+        except Exception as e:
+            print(f"Error detecting sound cards: {e}")
+            tx_card = None
+            usb_card = None
+            
+        # Try different configurations in order, starting with detected cards
+        jack_configs = []
+        
+        # Add configs using detected cards first
+        if tx_card:
+            jack_configs.append(["jackd", "-d", "alsa", "-d", tx_card, "-r", "48000", "-p", "1024", "-n", "2"])
+            jack_configs.append(["jackd", "-d", "alsa", "-d", tx_card, "-r", "44100", "-p", "512", "-n", "2"])
+            
+        if usb_card:
+            jack_configs.append(["jackd", "-d", "alsa", "-d", usb_card, "-r", "48000", "-p", "1024", "-n", "2"])
+            
+        # Add default configs
+        jack_configs.extend([
+            # Try with specific card numbers
+            ["jackd", "-d", "alsa", "-d", "hw:3", "-r", "48000", "-p", "1024", "-n", "2"],
+            ["jackd", "-d", "alsa", "-d", "hw:2", "-r", "48000", "-p", "1024", "-n", "2"],
+            
+            # Try standard configs
             ["jackd", "-d", "alsa", "-r", "48000", "-p", "1024", "-n", "2"],
-            
-            # Option 2: Specify default device
-            ["jackd", "-d", "alsa", "-d", "hw:0", "-r", "48000", "-p", "1024", "-n", "2"],
-            
-            # Option 3: Lower sample rate and buffer size
             ["jackd", "-d", "alsa", "-r", "44100", "-p", "512", "-n", "2"],
             
-            # Option 4: Use dummy driver (audio will work but no actual sound)
+            # Try with capture only mode explicitly (since diagnostic showed that's what was happening)
+            ["jackd", "-d", "alsa", "-C", "-r", "48000", "-p", "1024", "-n", "2"],
+            
+            # Use dummy driver as last resort (audio will work but no actual sound)
             ["jackd", "-d", "dummy", "-r", "48000", "-p", "1024"]
-        ]
+        ])
         
         for config_idx, cmd in enumerate(jack_configs):
             try:
@@ -497,7 +544,7 @@ class AudioSystem:
                 )
                 
                 # Give it time to start
-                time.sleep(2.0)
+                time.sleep(3.0)
                 
                 # Check if process is still running
                 if jack_process.poll() is not None:
@@ -520,6 +567,8 @@ class AudioSystem:
                 # Process is still running, check if JACK is actually working
                 if self._is_jack_running():
                     print(f"JACK server started successfully with configuration #{config_idx+1}")
+                    # Remember the successful configuration
+                    self.jack_config = cmd
                     return True
                 else:
                     print(f"JACK appears to be running but not responding")

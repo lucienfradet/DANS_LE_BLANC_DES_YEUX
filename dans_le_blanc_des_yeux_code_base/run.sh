@@ -81,7 +81,7 @@ fi
 echo "Checking JACK dependencies..."
 if ! command -v jackd >/dev/null 2>&1; then
     echo "Installing JACK audio dependencies..."
-    sudo apt install -y jackd2 libjack-jackd2-dev
+    sudo apt install -y jackd2 libjack-jackd2-dev jack-tools
 fi
 
 if ! command -v jack.udp_sender >/dev/null 2>&1; then
