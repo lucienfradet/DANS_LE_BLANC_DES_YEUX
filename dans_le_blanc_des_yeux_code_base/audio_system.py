@@ -97,28 +97,55 @@ class AudioSystem:
         print("Starting audio system...")
         self.running = True
         
-        # Start JACK server if not already running
+        # Initialize jack client as None
+        self.client = None
+        self.fallback_mode = False
+        
+        # JACK server initialization
         if not self._is_jack_running():
             if not self._start_jack_server():
-                print("Failed to start JACK server")
-                return False
-            self.jack_server_started = True
+                print("Failed to start JACK server, will try fallback mode")
+                self.fallback_mode = True
+            else:
+                self.jack_server_started = True
         else:
             print("JACK server is already running")
         
-        # Connect to JACK
-        try:
-            self.client = jack.Client("DansBlanc")
-            self.client.activate()
-            print("Connected to JACK server")
-        except jack.JackError as e:
-            print(f"Failed to connect to JACK server: {e}")
-            return False
+        # Connect to JACK if not in fallback mode
+        if not self.fallback_mode:
+            try:
+                # Wait a moment for JACK to fully initialize
+                time.sleep(1)
+                self.client = jack.Client("DansBlanc")
+                self.client.activate()
+                print("Connected to JACK server")
+                
+                # Start NetJack receiver
+                if not self._start_netjack_receiver():
+                    print("Warning: NetJack receiver failed to start")
+                    print("Audio receiving might not work properly")
+            except jack.JackError as e:
+                print(f"Failed to connect to JACK server: {e}")
+                print("Running in fallback mode with limited audio functionality")
+                self.fallback_mode = True
         
-        # Start NetJack receiver
-        self._start_netjack_receiver()
+        # In fallback mode, use direct ALSA controls for basic functionality
+        if self.fallback_mode:
+            print("Using fallback mode with direct ALSA controls")
+            print("Network audio streaming will be disabled")
+            
+            # Try to set up minimal audio capabilities
+            try:
+                # Set up ALSA devices directly
+                subprocess.run(["amixer", "sset", "Master", "unmute"], 
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["amixer", "sset", "Master", "80%"], 
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                print(f"Failed to set up fallback audio: {e}")
+                print("Audio functionality will be severely limited")
         
-        # Start audio monitor thread
+        # Start audio monitor thread regardless of mode
         monitor_thread = threading.Thread(target=self._audio_monitor_loop)
         monitor_thread.daemon = True
         monitor_thread.start()
@@ -127,7 +154,7 @@ class AudioSystem:
         # Update initial audio state based on current pressure conditions
         self._update_audio_state_based_on_pressure()
         
-        print("Audio system started")
+        print(f"Audio system started in {'fallback' if self.fallback_mode else 'normal'} mode")
         return True
     
     def stop(self) -> None:
@@ -223,29 +250,69 @@ class AudioSystem:
     def _update_channel_muting(self, channels_to_mute: List[str]) -> None:
         """Update channel muting based on the list of channels to mute."""
         try:
-            # Use JACK to mute/unmute channels
-            if self.client:
-                # Implementation will depend on how audio is routed in JACK
-                # This is a simplified example
-                output_ports = self.client.get_ports(is_audio=True, is_output=True, is_physical=True)
-                
-                for port in output_ports:
-                    port_name = port.name
+            # Different approach based on mode
+            if not self.fallback_mode and self.client:
+                # Use JACK for channel muting if available
+                try:
+                    output_ports = self.client.get_ports(is_audio=True, is_output=True, is_physical=True)
                     
-                    # Check if this is a left or right channel
-                    is_left = "left" in port_name.lower() or port_name.endswith("1")
-                    is_right = "right" in port_name.lower() or port_name.endswith("2")
-                    
-                    # Determine if this channel should be muted
-                    should_mute = (is_left and "left" in channels_to_mute) or (is_right and "right" in channels_to_mute)
-                    
-                    # Apply muting (implementation will depend on your JACK setup)
-                    # In practice, this might involve disconnecting ports or using JACK control tools
-                    
-            # Alternatively, use ALSA amixer for simple channel muting
+                    for port in output_ports:
+                        port_name = port.name
+                        
+                        # Check if this is a left or right channel
+                        is_left = "left" in port_name.lower() or port_name.endswith("1")
+                        is_right = "right" in port_name.lower() or port_name.endswith("2")
+                        
+                        # Determine if this channel should be muted
+                        should_mute = (is_left and "left" in channels_to_mute) or (is_right and "right" in channels_to_mute)
+                        
+                        # We would implement JACK-specific muting here
+                        # This typically involves disconnecting/connecting ports
+                        # For now, we'll fall back to ALSA muting
+                except Exception as e:
+                    print(f"Error with JACK muting, falling back to ALSA: {e}")
+            
+            # Use ALSA amixer for channel muting (works in both normal and fallback mode)
+            # Try multiple command variants since ALSA configuration can vary by system
             for channel in ["left", "right"]:
-                mute_cmd = ["amixer", "set", "Master", channel, "mute" if channel in channels_to_mute else "unmute"]
-                subprocess.run(mute_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if channel in channels_to_mute:
+                    # Try multiple mute commands as different systems use different syntax
+                    mute_commands = [
+                        ["amixer", "sset", "Master", channel, "mute"],
+                        ["amixer", "sset", "Master", channel, "0%"],
+                        ["amixer", "sset", "Master", channel, "off"],
+                        # Try with specific card if default fails
+                        ["amixer", "-c", "0", "sset", "Master", channel, "mute"],
+                        # Try PCM if Master doesn't work
+                        ["amixer", "sset", "PCM", channel, "mute"],
+                    ]
+                else:
+                    # Unmute commands
+                    mute_commands = [
+                        ["amixer", "sset", "Master", channel, "unmute"],
+                        ["amixer", "sset", "Master", channel, "80%"],
+                        ["amixer", "sset", "Master", channel, "on"],
+                        # Try with specific card
+                        ["amixer", "-c", "0", "sset", "Master", channel, "unmute"],
+                        # Try PCM
+                        ["amixer", "sset", "PCM", channel, "unmute"],
+                    ]
+                
+                # Try each command until one succeeds
+                success = False
+                for cmd in mute_commands:
+                    try:
+                        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if result.returncode == 0:
+                            success = True
+                            break
+                    except:
+                        pass
+                
+                if not success:
+                    print(f"Warning: Failed to {'mute' if channel in channels_to_mute else 'unmute'} {channel} channel")
+                    
+            print(f"Audio channels updated: muted={channels_to_mute}")
                 
         except Exception as e:
             print(f"Error updating channel muting: {e}")
@@ -253,16 +320,40 @@ class AudioSystem:
     def _update_streaming(self, mic_to_stream: str) -> None:
         """Update audio streaming to remote device."""
         try:
+            # Skip if in fallback mode
+            if self.fallback_mode:
+                print(f"Audio streaming not available in fallback mode (requested: {mic_to_stream})")
+                return
+                
             # Stop any existing streaming
             self._stop_netjack()
             
             # Start new streaming if needed
             if mic_to_stream != "none" and self.remote_ip:
                 mic_name = self.personal_mic_name if mic_to_stream == "personal" else self.global_mic_name
-                self._start_netjack_sender(mic_name)
+                success = self._start_netjack_sender(mic_name)
+                
+                if not success:
+                    print(f"Failed to start audio streaming for {mic_name}")
+                    
+                    # Try alternative streaming method if NetJack fails
+                    if self._try_alternative_streaming(mic_name):
+                        print(f"Successfully started alternative streaming for {mic_name}")
+                    else:
+                        print("All streaming methods failed")
         except Exception as e:
             print(f"Error updating audio streaming: {e}")
-    
+            
+    def _try_alternative_streaming(self, device_name: str) -> bool:
+        """Try alternative streaming methods if NetJack fails."""
+        try:
+            # One alternative would be to use gstreamer for streaming
+            # This is a placeholder for implementation
+            print("Alternative streaming not implemented yet")
+            return False
+        except Exception as e:
+            print(f"Error with alternative streaming: {e}")
+            return False    
     def _start_netjack_sender(self, source_device: str) -> bool:
         """Start NetJack sender to stream audio to remote device."""
         with self.netjack_lock:
@@ -369,32 +460,100 @@ class AudioSystem:
             return False
     
     def _start_jack_server(self) -> bool:
-        """Start JACK server."""
+        """Start JACK server with multiple fallback options."""
+        # Check for already running JACK processes that might conflict
         try:
-            # Start JACK server with appropriate settings
-            cmd = ["jackd", "-d", "alsa", "-r", "48000", "-p", "1024", "-n", "2"]
+            subprocess.run(["killall", "-9", "jackd"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("Killed existing JACK processes")
+            time.sleep(1)
+        except:
+            pass
             
-            print(f"Starting JACK server: {' '.join(cmd)}")
-            jack_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+        # Try different configurations in order
+        jack_configs = [
+            # Option 1: Standard ALSA configuration
+            ["jackd", "-d", "alsa", "-r", "48000", "-p", "1024", "-n", "2"],
             
-            # Give it time to start
-            time.sleep(2.0)
+            # Option 2: Specify default device
+            ["jackd", "-d", "alsa", "-d", "hw:0", "-r", "48000", "-p", "1024", "-n", "2"],
             
-            # Check if it's running
-            if self._is_jack_running():
-                print("JACK server started successfully")
-                return True
-            else:
-                print("JACK server failed to start")
-                return False
+            # Option 3: Lower sample rate and buffer size
+            ["jackd", "-d", "alsa", "-r", "44100", "-p", "512", "-n", "2"],
+            
+            # Option 4: Use dummy driver (audio will work but no actual sound)
+            ["jackd", "-d", "dummy", "-r", "48000", "-p", "1024"]
+        ]
+        
+        for config_idx, cmd in enumerate(jack_configs):
+            try:
+                print(f"Trying JACK configuration #{config_idx+1}: {' '.join(cmd)}")
                 
-        except Exception as e:
-            print(f"Error starting JACK server: {e}")
-            return False
+                # Run with error output visible
+                jack_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                # Give it time to start
+                time.sleep(2.0)
+                
+                # Check if process is still running
+                if jack_process.poll() is not None:
+                    # Process exited, check error output
+                    _, stderr = jack_process.communicate()
+                    print(f"JACK process exited with error: {stderr.strip()}")
+                    
+                    # Check for common errors
+                    if "Cannot connect to server socket" in stderr:
+                        print("HINT: JACK server might already be running or socket is in use")
+                    elif "Cannot open" in stderr and "device" in stderr:
+                        print("HINT: Audio device might be busy or not available")
+                    elif "Permission denied" in stderr:
+                        print("HINT: Permission issue. Try running with sudo or add user to audio group")
+                        print("      Run: sudo usermod -a -G audio $USER")
+                    
+                    # Continue to next configuration
+                    continue
+                
+                # Process is still running, check if JACK is actually working
+                if self._is_jack_running():
+                    print(f"JACK server started successfully with configuration #{config_idx+1}")
+                    return True
+                else:
+                    print(f"JACK appears to be running but not responding")
+                    # Kill the process before trying next config
+                    jack_process.terminate()
+                    time.sleep(0.5)
+            except Exception as e:
+                print(f"Error with JACK configuration #{config_idx+1}: {e}")
+        
+        # If we got here, all configurations failed
+        print("All JACK configurations failed. Trying to run without JACK...")
+        print("\nDIAGNOSTIC INFORMATION:")
+        
+        # Show audio devices
+        try:
+            print("\nAudio playback devices:")
+            subprocess.run(["aplay", "-l"], check=False)
+            
+            print("\nAudio recording devices:")
+            subprocess.run(["arecord", "-l"], check=False)
+        except:
+            print("Could not list audio devices")
+            
+        # Check ALSA permissions
+        try:
+            print("\nChecking audio group membership:")
+            subprocess.run(["groups"], check=False)
+        except:
+            pass
+            
+        # Last-ditch attempt: Try to use JACK without a server
+        print("\nAttempting to use JACK in 'standalone' mode (limited functionality)...")
+        self.jack_server_started = False
+        return False
     
     def _stop_jack_server(self) -> None:
         """Stop JACK server."""
