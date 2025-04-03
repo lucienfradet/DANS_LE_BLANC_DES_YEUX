@@ -27,7 +27,7 @@ class AudioSystem:
         self.remote_ip = remote_ip
         
         # PyAudio instance
-        self.p = pyaudio.PyAudio()
+        self.p = None  # Initialize later in start() method
         
         # Audio devices
         self.personal_mic_id = None
@@ -69,6 +69,7 @@ class AudioSystem:
         self.streaming_global_mic = False
         self.playing_audio = False
         self.muted_channels = {"left": False, "right": False}
+        self.is_shutting_down = False  # Flag to track shutdown state
         
         # Load configuration
         self._load_config()
@@ -90,26 +91,25 @@ class AudioSystem:
                 self.personal_speaker_mute_channel = config.get('audio', 'personal_speaker_mute_channel', fallback='left')
                 
                 # Device names from config
-                personal_mic_name = config.get('audio', 'personal_mic_name', fallback='TX 96Khz')
-                global_mic_name = config.get('audio', 'global_mic_name', fallback='USB Audio Device')
+                self.personal_mic_name = config.get('audio', 'personal_mic_name', fallback='TX 96Khz')
+                self.global_mic_name = config.get('audio', 'global_mic_name', fallback='USB Audio Device')
                 
                 print(f"Using audio configuration:")
                 print(f"  Global speaker mute channel: {self.global_speaker_mute_channel}")
                 print(f"  Personal speaker mute channel: {self.personal_speaker_mute_channel}")
-                print(f"  Personal mic name: {personal_mic_name}")
-                print(f"  Global mic name: {global_mic_name}")
-                
-                # Find device IDs by name
-                self._find_audio_devices(personal_mic_name, global_mic_name)
+                print(f"  Personal mic name: {self.personal_mic_name}")
+                print(f"  Global mic name: {self.global_mic_name}")
             else:
                 print("No [audio] section found in config.ini, using default settings")
                 # Use default names for device detection
-                self._find_audio_devices("TX 96Khz", "USB Audio Device")
+                self.personal_mic_name = "TX 96Khz"
+                self.global_mic_name = "USB Audio Device"
         except Exception as e:
             print(f"Error loading audio config: {e}")
             print("Using default audio settings")
             # Use default names for device detection
-            self._find_audio_devices("TX 96Khz", "USB Audio Device")
+            self.personal_mic_name = "TX 96Khz"
+            self.global_mic_name = "USB Audio Device"
     
     def _find_audio_devices(self, personal_mic_name: str, global_mic_name: str):
         """Find audio device IDs based on device names."""
@@ -169,11 +169,20 @@ class AudioSystem:
         print("Starting audio system...")
         
         try:
+            # Initialize PyAudio in the main thread
+            self.p = pyaudio.PyAudio()
+            
             # Create UDP sockets for audio streaming
             self.send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.receive_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.receive_socket.bind(("0.0.0.0", AUDIO_PORT))
             self.receive_socket.settimeout(0.5)
+            
+            # Find audio devices
+            self._find_audio_devices(
+                personal_mic_name=self.personal_mic_name,
+                global_mic_name=self.global_mic_name
+            )
             
             # Initialize audio streams
             if not self._start_audio_streams():
@@ -181,6 +190,7 @@ class AudioSystem:
                 return False
             
             self.running = True
+            self.is_shutting_down = False
             
             # Start audio processing threads
             
@@ -508,7 +518,7 @@ class AudioSystem:
         last_report_time = time.time()
         bytes_sent = 0
         
-        while self.running:
+        while self.running and not self.is_shutting_down:
             try:
                 if not self.streaming_personal_mic or self.personal_mic_stream is None:
                     time.sleep(0.1)
@@ -522,7 +532,8 @@ class AudioSystem:
                 data = audio_data.tobytes()
                 
                 # Send data to remote device
-                self.send_socket.sendto(data, (self.remote_ip, AUDIO_PORT))
+                if self.send_socket:
+                    self.send_socket.sendto(data, (self.remote_ip, AUDIO_PORT))
                 
                 # Update stats
                 bytes_sent += len(data)
@@ -536,15 +547,18 @@ class AudioSystem:
                 time.sleep(0.02)  # ~50Hz
                 
             except Exception as e:
-                print(f"Error in personal mic sender: {e}")
-                time.sleep(1.0)
+                if self.running and not self.is_shutting_down:
+                    print(f"Error in personal mic sender: {e}")
+                time.sleep(0.1)
+        
+        print("Personal mic sender thread exiting...")
     
     def _global_mic_sender_loop(self) -> None:
         """Send global mic audio to remote device when needed."""
         last_report_time = time.time()
         bytes_sent = 0
         
-        while self.running:
+        while self.running and not self.is_shutting_down:
             try:
                 if not self.streaming_global_mic or self.global_mic_stream is None:
                     time.sleep(0.1)
@@ -558,7 +572,8 @@ class AudioSystem:
                 data = audio_data.tobytes()
                 
                 # Send data to remote device
-                self.send_socket.sendto(data, (self.remote_ip, AUDIO_PORT))
+                if self.send_socket:
+                    self.send_socket.sendto(data, (self.remote_ip, AUDIO_PORT))
                 
                 # Update stats
                 bytes_sent += len(data)
@@ -572,8 +587,11 @@ class AudioSystem:
                 time.sleep(0.02)  # ~50Hz
                 
             except Exception as e:
-                print(f"Error in global mic sender: {e}")
-                time.sleep(1.0)
+                if self.running and not self.is_shutting_down:
+                    print(f"Error in global mic sender: {e}")
+                time.sleep(0.1)
+        
+        print("Global mic sender thread exiting...")
     
     def _audio_receiver_loop(self) -> None:
         """Receive audio from remote device."""
@@ -582,10 +600,14 @@ class AudioSystem:
         last_report_time = time.time()
         bytes_received = 0
         
-        while self.running:
+        while self.running and not self.is_shutting_down:
             try:
                 # Receive audio data
                 try:
+                    if not self.receive_socket:
+                        time.sleep(0.1)
+                        continue
+                    
                     data, addr = self.receive_socket.recvfrom(65536)
                     
                     # Convert bytes to numpy array
@@ -613,19 +635,21 @@ class AudioSystem:
                     # This is expected due to the socket timeout
                     pass
                 except Exception as e:
-                    if self.running:
+                    if self.running and not self.is_shutting_down:
                         print(f"Error receiving audio: {e}")
-                        time.sleep(0.5)
+                        time.sleep(0.2)
             except Exception as e:
-                if self.running:
+                if self.running and not self.is_shutting_down:
                     print(f"Error in audio receiver: {e}")
-                    time.sleep(1.0)
+                    time.sleep(0.2)
+        
+        print("Audio receiver thread exiting...")
     
     def _audio_playback_loop(self) -> None:
         """Play received audio with channel muting."""
         print("Starting audio playback loop")
         
-        while self.running:
+        while self.running and not self.is_shutting_down:
             try:
                 if not self.playing_audio or self.output_stream is None:
                     time.sleep(0.1)
@@ -642,10 +666,14 @@ class AudioSystem:
                 output_data = muted_audio.tobytes()
                 
                 # Play audio
-                self.output_stream.write(output_data)
+                if self.output_stream and self.output_stream.is_active():
+                    self.output_stream.write(output_data)
             except Exception as e:
-                print(f"Error in audio playback: {e}")
-                time.sleep(0.5)
+                if self.running and not self.is_shutting_down:
+                    print(f"Error in audio playback: {e}")
+                time.sleep(0.2)
+        
+        print("Audio playback thread exiting...")
 
 # Test function to run the audio system standalone
 def test_audio_system():
