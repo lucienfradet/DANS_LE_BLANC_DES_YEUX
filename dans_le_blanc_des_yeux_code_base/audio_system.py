@@ -176,19 +176,15 @@ class AudioSystem:
             return False
     
     def stop(self) -> None:
-        """Stop the audio system and release resources with improved cleanup."""
+        """Stop the audio system and release resources."""
         print("Stopping audio system...")
         self.running = False
         self.stop_event.set()
         
-        # Signal threads to stop and give them a moment
-        time.sleep(0.2)
-        
-        # Stop and close audio streams with additional error handling
+        # Stop and close audio streams
         if self.input_stream is not None:
             try:
-                if self.input_stream.is_active():
-                    self.input_stream.stop_stream()
+                self.input_stream.stop_stream()
                 self.input_stream.close()
             except Exception as e:
                 print(f"Error closing input stream: {e}")
@@ -196,15 +192,11 @@ class AudioSystem:
             
         if self.output_stream is not None:
             try:
-                if self.output_stream.is_active():
-                    self.output_stream.stop_stream()
+                self.output_stream.stop_stream()
                 self.output_stream.close()
             except Exception as e:
                 print(f"Error closing output stream: {e}")
             self.output_stream = None
-        
-        # Give ALSA a moment to release resources before terminating PyAudio
-        time.sleep(0.5)
         
         # Terminate PyAudio
         if self.pa is not None:
@@ -347,14 +339,12 @@ class AudioSystem:
             return False
     
     def _open_input_stream(self, device_id: int) -> bool:
-        """Open an input stream for the specified device with improved error handling."""
+        """Open an input stream for the specified device."""
         # Close existing input stream if it's open
         if self.input_stream is not None:
             try:
                 self.input_stream.stop_stream()
                 self.input_stream.close()
-                # Add a small delay to allow resources to be released
-                time.sleep(0.2)
             except Exception as e:
                 print(f"Error closing existing input stream: {e}")
             self.input_stream = None
@@ -373,24 +363,13 @@ class AudioSystem:
                 rate=self.rate,
                 input=True,
                 input_device_index=device_id,
-                frames_per_buffer=self.chunk_size,
-                start=False  # Don't start immediately
+                frames_per_buffer=self.chunk_size
             )
-            
-            # Start the stream separately after configuration
-            self.input_stream.start_stream()
             
             print(f"Opened input stream for device ID {device_id}")
             return True
         except Exception as e:
             print(f"Error opening input stream for device {device_id}: {e}")
-            # If there's an error, make sure we don't have a partially opened stream
-            if self.input_stream is not None:
-                try:
-                    self.input_stream.close()
-                except:
-                    pass
-                self.input_stream = None
             return False
     
     def _on_state_change(self, changed_state: str) -> None:
@@ -399,7 +378,7 @@ class AudioSystem:
             self._update_audio_routing()
     
     def _update_audio_routing(self) -> None:
-        """Update audio routing based on current system state with improved device switching."""
+        """Update audio routing based on current system state."""
         local_state = system_state.get_local_state()
         remote_state = system_state.get_remote_state()
         
@@ -410,85 +389,53 @@ class AudioSystem:
             self.current_mic = None
             self.muted_channel = 'both'  # Mute both channels
             self._update_system_state()
-            
-            # Close any open input stream
-            if self.input_stream is not None:
-                try:
-                    self.input_stream.stop_stream()
-                    self.input_stream.close()
-                except:
-                    pass
-                self.input_stream = None
             return
         
         # Logic based on pressure states
         old_mic = self.current_mic
-        old_device_id = None
-        
-        # Store the old device ID for comparison
-        if old_mic == 'personal':
-            old_device_id = self.personal_mic_id
-        elif old_mic == 'global':
-            old_device_id = self.global_mic_id
-        
-        # Determine the new state
-        new_mic = None
-        new_device_id = None
         
         # 1. When both have pressure: Play with LEFT channel muted, Send personal mic to remote
         if local_state.get("pressure", False) and remote_state.get("pressure", False):
             self.is_sending = True
-            new_mic = 'personal'
-            new_device_id = self.personal_mic_id
+            self.current_mic = 'personal'
             self.muted_channel = self.personal_speaker_mute_channel
             print("Audio: Both have pressure - Personal mic active, LEFT channel muted")
                 
         # 2. When remote has pressure and local doesn't: Play with RIGHT channel muted, Send global mic to remote
         elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
             self.is_sending = True
-            new_mic = 'global'
-            new_device_id = self.global_mic_id
+            self.current_mic = 'global'
             self.muted_channel = self.global_speaker_mute_channel
             print("Audio: Remote has pressure - Global mic active, RIGHT channel muted")
                 
         # 3. When local has pressure and remote doesn't: Play with LEFT channel muted, Send personal mic to remote
         elif local_state.get("pressure", False) and not remote_state.get("pressure", False):
             self.is_sending = True
-            new_mic = 'personal'
-            new_device_id = self.personal_mic_id
+            self.current_mic = 'personal'
             self.muted_channel = self.personal_speaker_mute_channel
             print("Audio: Local has pressure - Personal mic active, LEFT channel muted")
                 
         # 4. When neither has pressure: No playback
         else:
             self.is_sending = False
-            new_mic = None
+            self.current_mic = None
             self.muted_channel = 'both'  # Mute both channels
             print("Audio: No pressure - No audio transmission, both channels muted")
         
-        # Update the current mic type
-        self.current_mic = new_mic
-        
-        # If the device is actually different or we're transitioning to no mic,
-        # close the existing stream first
-        if (new_device_id != old_device_id) or (new_mic is None and self.input_stream is not None):
-            # Close input stream when not needed or before changing
-            if self.input_stream is not None:
+        # If the microphone changed, open the new input stream
+        if self.current_mic != old_mic:
+            if self.current_mic == 'personal':
+                self._open_input_stream(self.personal_mic_id)
+            elif self.current_mic == 'global':
+                self._open_input_stream(self.global_mic_id)
+            elif self.current_mic is None and self.input_stream is not None:
+                # Close input stream when not needed
                 try:
                     self.input_stream.stop_stream()
                     self.input_stream.close()
-                    # Add a delay to ensure proper resource release
-                    time.sleep(0.2)
-                except Exception as e:
-                    print(f"Error closing input stream during transition: {e}")
+                except:
+                    pass
                 self.input_stream = None
-        
-        # Only open a new input stream if needed and not already set up for the same device
-        if new_mic is not None and (self.input_stream is None or new_device_id != old_device_id):
-            if new_mic == 'personal':
-                self._open_input_stream(self.personal_mic_id)
-            elif new_mic == 'global':
-                self._open_input_stream(self.global_mic_id)
         
         # Update system state with audio state
         self._update_system_state()
@@ -503,12 +450,11 @@ class AudioSystem:
         system_state.update_audio_state(audio_state)
     
     def _audio_sender_loop(self) -> None:
-        """Thread function for sending audio data with improved error handling."""
+        """Thread function for sending audio data."""
         print("Audio sender thread started")
         
         packet_counter = 0
         last_report_time = time.time()
-        error_count = 0
         
         while not self.stop_event.is_set():
             if not self.is_sending or self.input_stream is None:
@@ -516,19 +462,7 @@ class AudioSystem:
                 continue
             
             try:
-                # Verify the stream is active before reading
-                if not self.input_stream.is_active():
-                    print("Warning: Input stream is not active. Attempting to restart...")
-                    try:
-                        self.input_stream.start_stream()
-                        # Reset error count on successful restart
-                        error_count = 0
-                    except Exception as restart_error:
-                        print(f"Failed to restart input stream: {restart_error}")
-                        time.sleep(0.5)
-                        continue
-                
-                # Read data from input stream with error tolerance
+                # Read data from input stream
                 input_data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
                 
                 if input_data:
@@ -545,34 +479,7 @@ class AudioSystem:
                         last_report_time = now
             except Exception as e:
                 if self.running and not self.stop_event.is_set():
-                    error_count += 1
                     print(f"Error in audio sender: {e}")
-                    
-                    # If we get repeated errors, try to recreate the input stream
-                    if error_count > 5 and self.current_mic is not None:
-                        print("Too many errors, attempting to recreate input stream...")
-                        # Close existing stream
-                        if self.input_stream is not None:
-                            try:
-                                self.input_stream.stop_stream()
-                                self.input_stream.close()
-                            except:
-                                pass
-                            self.input_stream = None
-                        
-                        # Wait a moment for resources to be released
-                        time.sleep(0.5)
-                        
-                        # Reopen stream
-                        if self.current_mic == 'personal':
-                            self._open_input_stream(self.personal_mic_id)
-                        elif self.current_mic == 'global':
-                            self._open_input_stream(self.global_mic_id)
-                        
-                        # Reset error count
-                        error_count = 0
-                
-                # Add a brief delay before continuing
                 time.sleep(0.1)
         
         print("Audio sender thread stopped")
