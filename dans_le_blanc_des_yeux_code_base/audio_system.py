@@ -1,86 +1,75 @@
 """
-Audio system for Dans le Blanc des Yeux installation.
-Uses VLC for reliable audio streaming and PyAudio for device management.
+Audio streaming system for the Dans le Blanc des Yeux installation.
+Uses JACK audio server for device management and network streaming.
+
+Audio Logic:
+1. When both have pressure:
+   - Play with LEFT channel muted (personal speaker muted)
+   - Send personal mic (TX) to remote
+2. When remote has pressure and local doesn't:
+   - Play with RIGHT channel muted (global speaker muted)
+   - Send global mic (USB) to remote
+3. When local has pressure and remote doesn't:
+   - Play with LEFT channel muted (personal speaker muted)
+   - Send personal mic (TX) to remote
+4. When neither has pressure:
+   - No audio playback
 """
 
 import time
 import threading
 import subprocess
-import socket
-import numpy as np
-import pyaudio
-import configparser
+import jack
 import os
-import signal
-import atexit
-from typing import Dict, Any, Optional, List, Tuple
-from pydub import AudioSegment
-
+import configparser
+import socket
+from typing import Dict, Any, List, Optional, Tuple
 from system_state import system_state
 
+
 class AudioSystem:
-    """Handles audio capture, playback, and streaming between devices using VLC."""
+    """Manages audio routing and streaming between devices using JACK."""
     
     def __init__(self, remote_ip: str):
         self.remote_ip = remote_ip
         
-        # PyAudio instance
-        self.p = None
+        # JACK client
+        self.client = None
+        self.jack_server_started = False
         
         # Audio devices
-        self.personal_mic_id = None
-        self.personal_mic_name = None
-        self.personal_mic_channels = 1  # TX mic is mono
+        self.personal_mic_name = "TX 96Khz"
+        self.global_mic_name = "USB Audio Device"
+        self.personal_speaker_mute_channel = "left"  # Channel to mute for personal speaker
+        self.global_speaker_mute_channel = "right"   # Channel to mute for global speaker
         
-        self.global_mic_id = None
-        self.global_mic_name = None
-        self.global_mic_channels = 1  # Default to mono, will detect
+        # Audio state
+        self.streaming_mic = "none"  # 'personal', 'global', or 'none'
+        self.muted_channels = []     # List of muted channels ('left', 'right', or both)
         
-        self.output_device_id = None
-        self.output_device_name = None
+        # NetJack sending
+        self.netjack_process = None
+        self.netjack_lock = threading.Lock()
         
-        # Channel muting configuration
-        self.global_speaker_mute_channel = None  # 'left' or 'right'
-        self.personal_speaker_mute_channel = None  # 'left' or 'right'
-        
-        # Output stream
-        self.output_stream = None
-        
-        # Streaming subprocesses
-        self.personal_mic_stream_process = None
-        self.global_mic_stream_process = None
-        self.receive_stream_process = None
-        
-        # Streaming control
-        self.streaming_personal_mic = False
-        self.streaming_global_mic = False
-        self.playing_audio = False
-        self.stream_port = 8888
-        self.receive_port = 8889
-        
-        # Muted channels
-        self.muted_channels = {"left": False, "right": False}
-        
-        # Thread control
+        # Threading
         self.running = False
         self.threads = []
-        self.lock = threading.Lock()
-        self.is_shutting_down = False
         
-        # HTTP streaming URLs
-        self.outgoing_stream_url = f"http://{self.remote_ip}:{self.stream_port}/audio.mp3"
-        self.incoming_stream_url = f"http://0.0.0.0:{self.receive_port}/audio.mp3"
-        
-        # Load configuration
+        # Get audio configuration from config.ini
         self._load_config()
         
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
         
-        # Register cleanup handler
-        atexit.register(self.stop)
+        # Initialize audio state in system state
+        audio_state = {
+            "playing": False,
+            "streaming_mic": self.streaming_mic,
+            "muted_channels": self.muted_channels
+        }
+        system_state.update_local_state({"audio": audio_state})
         
-        print(f"Audio system initialized with remote IP: {remote_ip}")
+        print("Audio system initialized")
     
     def _load_config(self):
         """Load audio configuration from config.ini."""
@@ -89,595 +78,495 @@ class AudioSystem:
             config.read('config.ini')
             
             if 'audio' in config:
-                # Load speaker channel muting configuration
-                self.global_speaker_mute_channel = config.get('audio', 'global_speaker_mute_channel', fallback='right')
-                self.personal_speaker_mute_channel = config.get('audio', 'personal_speaker_mute_channel', fallback='left')
+                # Load device names
+                self.personal_mic_name = config.get('audio', 'personal_mic_name', fallback=self.personal_mic_name)
+                self.global_mic_name = config.get('audio', 'global_mic_name', fallback=self.global_mic_name)
                 
-                # Device names from config
-                self.personal_mic_name = config.get('audio', 'personal_mic_name', fallback='TX 96Khz')
-                self.global_mic_name = config.get('audio', 'global_mic_name', fallback='USB Audio Device')
+                # Load channel configuration
+                self.personal_speaker_mute_channel = config.get('audio', 'personal_speaker_mute_channel', fallback=self.personal_speaker_mute_channel)
+                self.global_speaker_mute_channel = config.get('audio', 'global_speaker_mute_channel', fallback=self.global_speaker_mute_channel)
                 
-                print(f"Using audio configuration:")
-                print(f"  Global speaker mute channel: {self.global_speaker_mute_channel}")
-                print(f"  Personal speaker mute channel: {self.personal_speaker_mute_channel}")
-                print(f"  Personal mic name: {self.personal_mic_name}")
-                print(f"  Global mic name: {self.global_mic_name}")
-            else:
-                print("No [audio] section found in config.ini, using default settings")
-                # Use default names for device detection
-                self.personal_mic_name = "TX 96Khz"
-                self.global_mic_name = "USB Audio Device"
+                print(f"Loaded audio config: Personal mic='{self.personal_mic_name}', Global mic='{self.global_mic_name}'")
+                print(f"Channel config: Personal speaker mute='{self.personal_speaker_mute_channel}', Global speaker mute='{self.global_speaker_mute_channel}'")
         except Exception as e:
             print(f"Error loading audio config: {e}")
             print("Using default audio settings")
-            self.personal_mic_name = "TX 96Khz"
-            self.global_mic_name = "USB Audio Device"
-    
-    def _find_audio_devices(self):
-        """Find audio device IDs based on device names from config."""
-        try:
-            # Print all available devices for debugging
-            print("\nAvailable audio devices:")
-            for i in range(self.p.get_device_count()):
-                dev_info = self.p.get_device_info_by_index(i)
-                print(f"  {i}: {dev_info['name']} (in: {dev_info['maxInputChannels']}, out: {dev_info['maxOutputChannels']})")
-            
-            # Find personal mic
-            for i in range(self.p.get_device_count()):
-                dev_info = self.p.get_device_info_by_index(i)
-                if self.personal_mic_name.lower() in dev_info['name'].lower() and dev_info['maxInputChannels'] > 0:
-                    self.personal_mic_id = i
-                    self.personal_mic_channels = int(dev_info['maxInputChannels'])
-                    print(f"Found personal mic: {dev_info['name']} (ID: {i}, Channels: {self.personal_mic_channels})")
-                    break
-            
-            # Find global mic
-            for i in range(self.p.get_device_count()):
-                dev_info = self.p.get_device_info_by_index(i)
-                if self.global_mic_name.lower() in dev_info['name'].lower() and dev_info['maxInputChannels'] > 0:
-                    self.global_mic_id = i
-                    self.global_mic_channels = int(dev_info['maxInputChannels'])
-                    print(f"Found global mic: {dev_info['name']} (ID: {i}, Channels: {self.global_mic_channels})")
-                    break
-            
-            # Find output device (use default output)
-            default_output = self.p.get_default_output_device_info()
-            self.output_device_id = default_output['index']
-            self.output_device_name = default_output['name']
-            print(f"Using default output device: {self.output_device_name} (ID: {self.output_device_id})")
-            
-            # Check if we found all needed devices
-            if self.personal_mic_id is None:
-                print(f"Warning: Could not find personal mic with name '{self.personal_mic_name}'")
-                # Try to use default input device
-                default_input = self.p.get_default_input_device_info()
-                print(f"Using default input device for personal mic: {default_input['name']} (ID: {default_input['index']})")
-                self.personal_mic_id = default_input['index']
-                self.personal_mic_name = default_input['name']
-            
-            if self.global_mic_id is None:
-                print(f"Warning: Could not find global mic with name '{self.global_mic_name}'")
-                if self.personal_mic_id is not None:
-                    print(f"Using personal mic for global mic as well")
-                    self.global_mic_id = self.personal_mic_id
-                    self.global_mic_name = self.personal_mic_name
-                    self.global_mic_channels = self.personal_mic_channels
-                else:
-                    # Try to use default input device
-                    default_input = self.p.get_default_input_device_info()
-                    print(f"Using default input device for global mic: {default_input['name']} (ID: {default_input['index']})")
-                    self.global_mic_id = default_input['index']
-                    self.global_mic_name = default_input['name']
-                    self.global_mic_channels = int(default_input['maxInputChannels'])
-            
-            return True
-        except Exception as e:
-            print(f"Error finding audio devices: {e}")
-            print("Audio functionality may be limited")
-            return False
     
     def start(self) -> bool:
-        """Start the audio system."""
+        """Start the audio system and JACK server."""
         print("Starting audio system...")
+        self.running = True
         
-        try:
-            # Initialize PyAudio in the main thread
-            self.p = pyaudio.PyAudio()
-            
-            # Find audio devices
-            if not self._find_audio_devices():
-                print("Failed to find audio devices")
+        # Start JACK server if not already running
+        if not self._is_jack_running():
+            if not self._start_jack_server():
+                print("Failed to start JACK server")
                 return False
-            
-            # Initialize audio output stream for playback
-            self._init_output_stream()
-            
-            self.running = True
-            self.is_shutting_down = False
-            
-            # Start audio playback thread
-            playback_thread = threading.Thread(target=self._audio_playback_loop)
-            playback_thread.daemon = True
-            playback_thread.start()
-            self.threads.append(playback_thread)
-            
-            # Check initial state to see if we need to start streaming right away
-            self._update_audio_based_on_state()
-            
-            print("Audio system started")
-            return True
-        except Exception as e:
-            print(f"Error starting audio system: {e}")
-            self.stop()
+            self.jack_server_started = True
+        else:
+            print("JACK server is already running")
+        
+        # Connect to JACK
+        try:
+            self.client = jack.Client("DansBlanc")
+            self.client.activate()
+            print("Connected to JACK server")
+        except jack.JackError as e:
+            print(f"Failed to connect to JACK server: {e}")
             return False
+        
+        # Start NetJack receiver
+        self._start_netjack_receiver()
+        
+        # Start audio monitor thread
+        monitor_thread = threading.Thread(target=self._audio_monitor_loop)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+        self.threads.append(monitor_thread)
+        
+        # Update initial audio state based on current pressure conditions
+        self._update_audio_state_based_on_pressure()
+        
+        print("Audio system started")
+        return True
     
     def stop(self) -> None:
-        """Stop the audio system and release resources."""
-        if self.is_shutting_down:
-            return
-            
+        """Stop the audio system and clean up resources."""
         print("Stopping audio system...")
-        self.is_shutting_down = True
         self.running = False
         
-        # Stop all streaming
-        self._stop_all_audio()
+        # Stop NetJack processes
+        self._stop_netjack()
         
-        # Kill any VLC processes
-        self._kill_vlc_processes()
-        
-        # Wait for threads to finish
+        # Wait for all threads to finish
         for thread in self.threads:
             thread.join(timeout=1.0)
         
-        # Close output stream
-        if self.output_stream:
+        # Disconnect from JACK
+        if self.client:
             try:
-                if self.output_stream.is_active():
-                    self.output_stream.stop_stream()
-                self.output_stream.close()
-                self.output_stream = None
+                self.client.deactivate()
+                self.client.close()
             except Exception as e:
-                print(f"Error closing output stream: {e}")
+                print(f"Error closing JACK client: {e}")
         
-        # Terminate PyAudio
-        if self.p:
-            try:
-                self.p.terminate()
-                self.p = None
-            except Exception as e:
-                print(f"Error terminating PyAudio: {e}")
+        # Stop JACK server if we started it
+        if self.jack_server_started:
+            self._stop_jack_server()
         
         print("Audio system stopped")
-    
-    def _init_output_stream(self) -> bool:
-        """Initialize the audio output stream."""
-        try:
-            # Start output stream
-            self.output_stream = self.p.open(
-                format=pyaudio.paInt16,
-                channels=2,  # Always stereo for output
-                rate=44100,
-                output=True,
-                output_device_index=self.output_device_id,
-                frames_per_buffer=1024
-            )
-            print(f"Started output stream (ID: {self.output_device_id})")
-            return True
-        except Exception as e:
-            print(f"Error starting output stream: {e}")
-            return False
     
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
         if changed_state in ["local", "remote"]:
-            self._update_audio_based_on_state()
+            # Update audio state when pressure changes
+            self._update_audio_state_based_on_pressure()
     
-    def _update_audio_based_on_state(self) -> None:
-        """Update audio streaming and muting based on current state."""
+    def _update_audio_state_based_on_pressure(self) -> None:
+        """Update audio routing and streaming based on pressure states."""
         local_state = system_state.get_local_state()
         remote_state = system_state.get_remote_state()
         
-        # Only proceed if remote is connected
-        if not remote_state.get("connected", False):
-            self._stop_all_audio()
-            return
+        local_pressure = local_state.get("pressure", False)
+        remote_pressure = remote_state.get("pressure", False)
+        is_connected = remote_state.get("connected", False)
         
-        # Case 1: Both have pressure
-        if local_state.get("pressure", False) and remote_state.get("pressure", False):
-            # Play with LEFT channel muted
-            self._set_muted_channels(left=True, right=False)
-            self.playing_audio = True
-            
-            # Stream personal mic to remote
-            self._start_personal_mic_stream()
-            self._stop_global_mic_stream()
-            
-            # Update system state
-            system_state.update_local_state({"audio": {
-                "playing": True,
-                "muted_channels": ["left"],
-                "streaming_mic": "personal"
-            }})
+        # Default state: no streaming, all channels muted
+        new_streaming_mic = "none"
+        new_muted_channels = ["left", "right"]
         
-        # Case 2: Remote has pressure and local doesn't
-        elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
-            # Play with RIGHT channel muted
-            self._set_muted_channels(left=False, right=True)
-            self.playing_audio = True
-            
-            # Stream global mic to remote
-            self._stop_personal_mic_stream()
-            self._start_global_mic_stream()
-            
-            # Update system state
-            system_state.update_local_state({"audio": {
-                "playing": True,
-                "muted_channels": ["right"],
-                "streaming_mic": "global"
-            }})
+        # Apply logic based on pressure states
+        if is_connected:
+            # Case 1: Both have pressure
+            if local_pressure and remote_pressure:
+                new_streaming_mic = "personal"
+                new_muted_channels = [self.personal_speaker_mute_channel]  # Mute LEFT channel (personal)
+                
+            # Case 2: Remote has pressure, local doesn't
+            elif remote_pressure and not local_pressure:
+                new_streaming_mic = "global"
+                new_muted_channels = [self.global_speaker_mute_channel]    # Mute RIGHT channel (global)
+                
+            # Case 3: Local has pressure, remote doesn't
+            elif local_pressure and not remote_pressure:
+                new_streaming_mic = "personal"
+                new_muted_channels = [self.personal_speaker_mute_channel]  # Mute LEFT channel (personal)
+                
+            # Case 4: Neither has pressure
+            else:
+                new_streaming_mic = "none"
+                new_muted_channels = ["left", "right"]  # Mute both channels (no playback)
         
-        # Case 3: Local has pressure and remote doesn't
-        elif local_state.get("pressure", False) and not remote_state.get("pressure", False):
-            # Play with LEFT channel muted
-            self._set_muted_channels(left=True, right=False)
-            self.playing_audio = True
+        # Only update if there are changes
+        if new_streaming_mic != self.streaming_mic or set(new_muted_channels) != set(self.muted_channels):
+            print(f"Audio state change: streaming_mic={new_streaming_mic}, muted_channels={new_muted_channels}")
             
-            # Stream personal mic to remote
-            self._start_personal_mic_stream()
-            self._stop_global_mic_stream()
+            # Update muting
+            self._update_channel_muting(new_muted_channels)
+            
+            # Update streaming
+            if new_streaming_mic != self.streaming_mic:
+                self._update_streaming(new_streaming_mic)
+            
+            # Update local state
+            self.muted_channels = new_muted_channels
+            self.streaming_mic = new_streaming_mic
             
             # Update system state
-            system_state.update_local_state({"audio": {
-                "playing": True,
-                "muted_channels": ["left"],
-                "streaming_mic": "personal"
-            }})
-        
-        # Case 4: No pressure on either device
-        else:
-            # No playback
-            self._stop_all_audio()
+            audio_state = {
+                "playing": len(new_muted_channels) < 2,  # Playing if at least one channel is unmuted
+                "streaming_mic": new_streaming_mic,
+                "muted_channels": new_muted_channels
+            }
+            system_state.update_local_state({"audio": audio_state})
     
-    def _stop_all_audio(self) -> None:
-        """Stop all audio streaming and playback."""
-        # Stop streaming
-        self._stop_personal_mic_stream()
-        self._stop_global_mic_stream()
-        
-        # Stop stream receiving
-        self._stop_receive_stream()
-        
-        # Stop playback
-        self.playing_audio = False
-        
-        # Mute all channels
-        self._set_muted_channels(left=True, right=True)
-        
-        # Update system state
-        system_state.update_local_state({"audio": {
-            "playing": False,
-            "muted_channels": ["left", "right"],
-            "streaming_mic": "none"
-        }})
-    
-    def _set_muted_channels(self, left: bool, right: bool) -> None:
-        """Set the muting state for left and right channels."""
-        with self.lock:
-            self.muted_channels["left"] = left
-            self.muted_channels["right"] = right
-            print(f"Audio channels muting: Left={left}, Right={right}")
-    
-    def _start_personal_mic_stream(self) -> None:
-        """Start streaming personal mic using VLC."""
-        if self.streaming_personal_mic:
-            return
-            
-        if self.personal_mic_id is None:
-            print("Cannot stream personal mic: No device found")
-            return
-        
+    def _update_channel_muting(self, channels_to_mute: List[str]) -> None:
+        """Update channel muting based on the list of channels to mute."""
         try:
-            # Stop any existing process
-            if self.personal_mic_stream_process:
-                self._stop_personal_mic_stream()
-            
-            # Get the ALSA device name
-            hw_device = f"hw:{self.personal_mic_id},0"
-            print(f"Starting personal mic stream from {hw_device} to {self.outgoing_stream_url}")
-            
-            # Start VLC process for streaming
-            cmd = [
-                'cvlc',
-                f'alsa://{hw_device}',
-                '--sout', 
-                f'#transcode{{acodec=mp3,ab=64,channels=1}}:http{{mux=mp3,dst={self.remote_ip}:{self.stream_port}/audio.mp3}}'
-            ]
-            
-            self.personal_mic_stream_process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            
-            # Also start receiving stream from remote
-            self._start_receive_stream()
-            
-            self.streaming_personal_mic = True
-            print("Personal mic streaming started")
+            # Use JACK to mute/unmute channels
+            if self.client:
+                # Implementation will depend on how audio is routed in JACK
+                # This is a simplified example
+                output_ports = self.client.get_ports(is_audio=True, is_output=True, is_physical=True)
+                
+                for port in output_ports:
+                    port_name = port.name
+                    
+                    # Check if this is a left or right channel
+                    is_left = "left" in port_name.lower() or port_name.endswith("1")
+                    is_right = "right" in port_name.lower() or port_name.endswith("2")
+                    
+                    # Determine if this channel should be muted
+                    should_mute = (is_left and "left" in channels_to_mute) or (is_right and "right" in channels_to_mute)
+                    
+                    # Apply muting (implementation will depend on your JACK setup)
+                    # In practice, this might involve disconnecting ports or using JACK control tools
+                    
+            # Alternatively, use ALSA amixer for simple channel muting
+            for channel in ["left", "right"]:
+                mute_cmd = ["amixer", "set", "Master", channel, "mute" if channel in channels_to_mute else "unmute"]
+                subprocess.run(mute_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
         except Exception as e:
-            print(f"Error starting personal mic stream: {e}")
+            print(f"Error updating channel muting: {e}")
     
-    def _stop_personal_mic_stream(self) -> None:
-        """Stop streaming personal mic."""
-        if not self.streaming_personal_mic:
-            return
-            
-        if self.personal_mic_stream_process:
-            try:
-                self.personal_mic_stream_process.terminate()
-                self.personal_mic_stream_process.wait(timeout=2)
-            except Exception as e:
-                print(f"Error stopping personal mic stream: {e}")
-                # Force kill if needed
-                try:
-                    self.personal_mic_stream_process.kill()
-                except:
-                    pass
-            self.personal_mic_stream_process = None
-        
-        self.streaming_personal_mic = False
-        print("Personal mic streaming stopped")
-    
-    def _start_global_mic_stream(self) -> None:
-        """Start streaming global mic using VLC."""
-        if self.streaming_global_mic:
-            return
-            
-        if self.global_mic_id is None:
-            print("Cannot stream global mic: No device found")
-            return
-        
+    def _update_streaming(self, mic_to_stream: str) -> None:
+        """Update audio streaming to remote device."""
         try:
-            # Stop any existing process
-            if self.global_mic_stream_process:
-                self._stop_global_mic_stream()
+            # Stop any existing streaming
+            self._stop_netjack()
             
-            # Get the ALSA device name
-            hw_device = f"hw:{self.global_mic_id},0"
-            print(f"Starting global mic stream from {hw_device} to {self.outgoing_stream_url}")
-            
-            # Start VLC process for streaming
-            cmd = [
-                'cvlc',
-                f'alsa://{hw_device}',
-                '--sout', 
-                f'#transcode{{acodec=mp3,ab=64,channels=1}}:http{{mux=mp3,dst={self.remote_ip}:{self.stream_port}/audio.mp3}}'
-            ]
-            
-            self.global_mic_stream_process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            
-            # Also start receiving stream from remote
-            self._start_receive_stream()
-            
-            self.streaming_global_mic = True
-            print("Global mic streaming started")
+            # Start new streaming if needed
+            if mic_to_stream != "none" and self.remote_ip:
+                mic_name = self.personal_mic_name if mic_to_stream == "personal" else self.global_mic_name
+                self._start_netjack_sender(mic_name)
         except Exception as e:
-            print(f"Error starting global mic stream: {e}")
+            print(f"Error updating audio streaming: {e}")
     
-    def _stop_global_mic_stream(self) -> None:
-        """Stop streaming global mic."""
-        if not self.streaming_global_mic:
-            return
-            
-        if self.global_mic_stream_process:
+    def _start_netjack_sender(self, source_device: str) -> bool:
+        """Start NetJack sender to stream audio to remote device."""
+        with self.netjack_lock:
             try:
-                self.global_mic_stream_process.terminate()
-                self.global_mic_stream_process.wait(timeout=2)
+                # Format command to start jack.udp_sender
+                # Parameters will need adjustment based on your network and quality requirements
+                cmd = [
+                    "jack.udp_sender",
+                    "--host", self.remote_ip,
+                    "--source", source_device,
+                    "--channels", "2"  # Stereo audio
+                ]
+                
+                print(f"Starting NetJack sender: {' '.join(cmd)}")
+                self.netjack_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                
+                # Give it a moment to start
+                time.sleep(0.5)
+                
+                # Check if process is still running
+                if self.netjack_process.poll() is None:
+                    print(f"NetJack sender started successfully, streaming {source_device}")
+                    return True
+                else:
+                    print("NetJack sender failed to start")
+                    return False
+                    
             except Exception as e:
-                print(f"Error stopping global mic stream: {e}")
-                # Force kill if needed
-                try:
-                    self.global_mic_stream_process.kill()
-                except:
-                    pass
-            self.global_mic_stream_process = None
-        
-        self.streaming_global_mic = False
-        print("Global mic streaming stopped")
+                print(f"Error starting NetJack sender: {e}")
+                return False
     
-    def _start_receive_stream(self) -> None:
-        """Start receiving audio stream from remote device."""
-        try:
-            # Stop any existing receive process
-            self._stop_receive_stream()
-            
-            # We'll start listening on our receive port for incoming audio
-            print(f"Starting to receive stream from {self.remote_ip}")
-            
-            # Start VLC process for receiving and playing
-            # The fifo file will be read by our audio playback thread
-            fifo_path = "/tmp/dans_le_blanc_audio_fifo"
-            
-            # Create FIFO if it doesn't exist
-            if not os.path.exists(fifo_path):
+    def _stop_netjack(self) -> None:
+        """Stop any running NetJack processes."""
+        with self.netjack_lock:
+            if self.netjack_process:
                 try:
-                    os.mkfifo(fifo_path)
+                    self.netjack_process.terminate()
+                    self.netjack_process.wait(timeout=2.0)
                 except Exception as e:
-                    print(f"Error creating FIFO: {e}")
-                    return
+                    print(f"Error stopping NetJack process: {e}")
+                    try:
+                        self.netjack_process.kill()
+                    except:
+                        pass
+                finally:
+                    self.netjack_process = None
             
-            # Start VLC to receive audio and write to FIFO
+            # Additional cleanup to ensure no hanging processes
+            try:
+                subprocess.run(
+                    ["killall", "-9", "jack.udp_sender"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except:
+                pass
+    
+    def _start_netjack_receiver(self) -> bool:
+        """Start NetJack receiver to receive audio from remote device."""
+        try:
+            # Start jack.udp_receiver in background
             cmd = [
-                'cvlc',
-                f'http://{self.remote_ip}:{self.stream_port}/audio.mp3',
-                '--sout',
-                f'#std{{access=file,mux=raw,dst={fifo_path}}}'
+                "jack.udp_receiver",
+                "--channels", "2"  # Stereo audio
             ]
             
-            self.receive_stream_process = subprocess.Popen(
+            print(f"Starting NetJack receiver: {' '.join(cmd)}")
+            receiver_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
             
-            print("Audio receive process started")
+            # Give it a moment to start
+            time.sleep(0.5)
+            
+            # Check if process is still running
+            if receiver_process.poll() is None:
+                print("NetJack receiver started successfully")
+                return True
+            else:
+                print("NetJack receiver failed to start")
+                return False
+                
         except Exception as e:
-            print(f"Error starting receive stream: {e}")
+            print(f"Error starting NetJack receiver: {e}")
+            return False
     
-    def _stop_receive_stream(self) -> None:
-        """Stop receiving audio stream."""
-        if self.receive_stream_process:
-            try:
-                self.receive_stream_process.terminate()
-                self.receive_stream_process.wait(timeout=2)
-            except Exception as e:
-                print(f"Error stopping receive stream: {e}")
-                # Force kill if needed
-                try:
-                    self.receive_stream_process.kill()
-                except:
-                    pass
-            self.receive_stream_process = None
-            print("Audio receive process stopped")
-    
-    def _kill_vlc_processes(self) -> None:
-        """Kill all VLC processes started by this system."""
-        processes = [
-            self.personal_mic_stream_process,
-            self.global_mic_stream_process,
-            self.receive_stream_process
-        ]
-        
-        for process in processes:
-            if process:
-                try:
-                    process.terminate()
-                    process.wait(timeout=1)
-                except:
-                    try:
-                        process.kill()
-                    except:
-                        pass
-    
-    def _audio_playback_loop(self) -> None:
-        """Play received audio with channel muting."""
-        print("Starting audio playback loop")
-        fifo_path = "/tmp/dans_le_blanc_audio_fifo"
-        
-        # Make sure FIFO exists
-        if not os.path.exists(fifo_path):
-            try:
-                os.mkfifo(fifo_path)
-            except Exception as e:
-                print(f"Error creating FIFO: {e}")
-                return
-        
-        # Buffer for audio processing
-        buffer_size = 1024 * 2  # 1024 samples * 2 bytes per sample (16-bit)
-        
+    def _is_jack_running(self) -> bool:
+        """Check if JACK server is already running."""
         try:
-            while self.running and not self.is_shutting_down:
-                try:
-                    if not self.playing_audio or self.output_stream is None:
-                        time.sleep(0.1)
-                        continue
-                    
-                    # Try to open the FIFO for reading
-                    # We use non-blocking open to avoid hanging if there's no data
-                    fd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
-                    try:
-                        data = os.read(fd, buffer_size)
-                        if data:
-                            # Convert bytes to numpy array (assuming stereo int16 format)
-                            audio_data = np.frombuffer(data, dtype=np.int16)
-                            
-                            # Handle odd number of samples
-                            if len(audio_data) % 2 != 0:
-                                audio_data = audio_data[:-1]
-                            
-                            # Reshape to stereo (2 channels)
-                            if len(audio_data) > 0:
-                                try:
-                                    audio_data = audio_data.reshape(-1, 2)
-                                    
-                                    # Apply channel muting
-                                    muted_data = audio_data.copy()
-                                    
-                                    # Mute left channel if needed
-                                    if self.muted_channels["left"]:
-                                        muted_data[:, 0] = 0
-                                    
-                                    # Mute right channel if needed
-                                    if self.muted_channels["right"]:
-                                        muted_data[:, 1] = 0
-                                    
-                                    # Convert back to bytes
-                                    output_data = muted_data.tobytes()
-                                    
-                                    # Play audio
-                                    if self.output_stream and self.output_stream.is_active():
-                                        self.output_stream.write(output_data)
-                                except Exception as reshape_error:
-                                    print(f"Error processing audio data: {reshape_error}")
-                    except BlockingIOError:
-                        # No data available, sleep briefly
-                        time.sleep(0.01)
-                    finally:
-                        # Close the file descriptor
-                        os.close(fd)
-                except Exception as e:
-                    if self.running and not self.is_shutting_down:
-                        print(f"Error in audio playback: {e}")
-                    time.sleep(0.1)
+            result = subprocess.run(
+                ["jack_control", "status"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            return "running" in result.stdout.lower()
+        except Exception:
+            return False
+    
+    def _start_jack_server(self) -> bool:
+        """Start JACK server."""
+        try:
+            # Start JACK server with appropriate settings
+            cmd = ["jackd", "-d", "alsa", "-r", "48000", "-p", "1024", "-n", "2"]
+            
+            print(f"Starting JACK server: {' '.join(cmd)}")
+            jack_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            # Give it time to start
+            time.sleep(2.0)
+            
+            # Check if it's running
+            if self._is_jack_running():
+                print("JACK server started successfully")
+                return True
+            else:
+                print("JACK server failed to start")
+                return False
+                
         except Exception as e:
-            print(f"Error in audio playback loop: {e}")
-        finally:
-            print("Audio playback thread exiting...")
+            print(f"Error starting JACK server: {e}")
+            return False
+    
+    def _stop_jack_server(self) -> None:
+        """Stop JACK server."""
+        try:
+            subprocess.run(
+                ["jack_control", "stop"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            print("JACK server stopped")
+        except Exception as e:
+            print(f"Error stopping JACK server: {e}")
+    
+    def _find_device_by_name(self, device_name: str) -> Optional[str]:
+        """Find JACK device ID by name."""
+        try:
+            # Get list of JACK input ports
+            if self.client:
+                ports = self.client.get_ports(is_audio=True, is_input=True, is_physical=True)
+                
+                # Find the device with matching name
+                for port in ports:
+                    if device_name.lower() in port.name.lower():
+                        return port.name
+            
+            # If client is not available or device not found, try using system tools
+            result = subprocess.run(
+                ["jack_lsp"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if device_name.lower() in line.lower():
+                        return line.strip()
+            
+            print(f"Warning: Could not find audio device named '{device_name}'")
+            return None
+            
+        except Exception as e:
+            print(f"Error finding audio device: {e}")
+            return None
+    
+    def _connect_ports(self, source_port: str, dest_port: str) -> bool:
+        """Connect two JACK ports."""
+        try:
+            if self.client:
+                # Connect using JACK client
+                self.client.connect(source_port, dest_port)
+                return True
+            else:
+                # Connect using jack_connect command
+                result = subprocess.run(
+                    ["jack_connect", source_port, dest_port],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                # Check if successful or already connected
+                return result.returncode == 0 or "already connected" in result.stderr.lower()
+                
+        except Exception as e:
+            print(f"Error connecting JACK ports: {e}")
+            return False
+    
+    def _disconnect_ports(self, source_port: str, dest_port: str) -> bool:
+        """Disconnect two JACK ports."""
+        try:
+            if self.client:
+                # Disconnect using JACK client
+                self.client.disconnect(source_port, dest_port)
+                return True
+            else:
+                # Disconnect using jack_disconnect command
+                result = subprocess.run(
+                    ["jack_disconnect", source_port, dest_port],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                # Check if successful or already disconnected
+                return result.returncode == 0 or "not connected" in result.stderr.lower()
+                
+        except Exception as e:
+            print(f"Error disconnecting JACK ports: {e}")
+            return False
+    
+    def _audio_monitor_loop(self) -> None:
+        """Monitor audio system and ensure proper operation."""
+        print("Audio monitor thread started")
+        
+        check_interval = 5.0  # seconds
+        last_check_time = 0
+        
+        while self.running:
+            current_time = time.time()
+            
+            # Perform periodic checks
+            if current_time - last_check_time >= check_interval:
+                # Ensure audio routing is correct
+                self._check_audio_routing()
+                
+                # Check if we need to update audio state based on system state
+                self._update_audio_state_based_on_pressure()
+                
+                last_check_time = current_time
+            
+            # Sleep a bit to avoid consuming CPU
+            time.sleep(0.5)
+        
+        print("Audio monitor thread stopped")
+    
+    def _check_audio_routing(self) -> None:
+        """Check and correct audio routing if necessary."""
+        try:
+            # Implementation will depend on your specific JACK setup
+            # This is a placeholder for a function that would check and fix routing issues
+            pass
+            
+        except Exception as e:
+            print(f"Error checking audio routing: {e}")
 
-# Test function to run the audio system standalone
-def test_audio_system():
-    """Test the audio system by toggling different states."""
-    from system_state import system_state
-    
-    # Set up system state for testing
-    system_state.update_local_state({"pressure": False})
-    system_state.update_remote_state({"pressure": True, "connected": True})
-    
-    # Initialize audio system with loopback address for testing
-    audio_system = AudioSystem("127.0.0.1")
-    if not audio_system.start():
-        print("Failed to start audio system")
-        return
-    
-    try:
-        print("\nTesting different pressure states:")
-        print("\n1. Remote pressure, local no pressure - RIGHT channel muted, streaming global mic")
-        time.sleep(10)
-        
-        print("\n2. Both have pressure - LEFT channel muted, streaming personal mic")
-        system_state.update_local_state({"pressure": True})
-        time.sleep(10)
-        
-        print("\n3. Local pressure, remote no pressure - LEFT channel muted, streaming personal mic")
-        system_state.update_remote_state({"pressure": False})
-        time.sleep(10)
-        
-        print("\n4. Neither has pressure - No playback")
-        system_state.update_local_state({"pressure": False})
-        time.sleep(10)
-        
-        print("\nAudio system test complete.")
-    except KeyboardInterrupt:
-        print("Test interrupted by user")
-    finally:
-        # Clean up
-        audio_system.stop()
 
-# Run test if executed directly
+# Run as standalone test if executed directly
 if __name__ == "__main__":
-    test_audio_system()
+    print("Testing audio system...")
+    
+    # Initialize with loopback address for testing
+    audio_system = AudioSystem("127.0.0.1")
+    
+    if audio_system.start():
+        try:
+            print("\nSimulating different pressure states:")
+            
+            # Test case 1: Both have pressure
+            print("\n1. Both have pressure - Should mute LEFT channel (personal), stream personal mic")
+            system_state.update_local_state({"pressure": True})
+            system_state.update_remote_state({"pressure": True, "connected": True})
+            time.sleep(5)
+            
+            # Test case 2: Remote has pressure, local doesn't
+            print("\n2. Remote has pressure, local doesn't - Should mute RIGHT channel (global), stream global mic")
+            system_state.update_local_state({"pressure": False})
+            system_state.update_remote_state({"pressure": True, "connected": True})
+            time.sleep(5)
+            
+            # Test case 3: Local has pressure, remote doesn't
+            print("\n3. Local has pressure, remote doesn't - Should mute LEFT channel (personal), stream personal mic")
+            system_state.update_local_state({"pressure": True})
+            system_state.update_remote_state({"pressure": False, "connected": True})
+            time.sleep(5)
+            
+            # Test case 4: Neither has pressure
+            print("\n4. Neither has pressure - Should mute both channels (no playback), no streaming")
+            system_state.update_local_state({"pressure": False})
+            system_state.update_remote_state({"pressure": False, "connected": True})
+            time.sleep(5)
+            
+            print("\nAudio test complete.")
+            print("Press Ctrl+C to stop...")
+            
+            while True:
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            print("\nTest interrupted by user")
+        finally:
+            audio_system.stop()
+            print("Audio system stopped")
+    else:
+        print("Failed to start audio system")

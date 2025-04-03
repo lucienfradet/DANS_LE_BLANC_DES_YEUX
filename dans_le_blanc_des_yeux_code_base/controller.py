@@ -229,7 +229,8 @@ if __name__ == "__main__":
                     # Add any audio-specific configuration here
                     print(f"Using audio settings from config: {audio_params}")
                 except (ValueError, configparser.Error) as e:
-                    print(f"Error reading audio config: {e}. Using defaults.")
+                    print(f"Error reading audio config: {e}")
+                    print("Using defaults.")
             
             # Initialize audio system
             print("Starting audio system...")
