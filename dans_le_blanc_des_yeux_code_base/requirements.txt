@@ -3,3 +3,4 @@ python-osc
 opencv-python
 numpy
 pyaudio
+pydub

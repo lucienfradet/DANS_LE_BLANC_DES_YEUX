@@ -148,39 +148,6 @@ class TerminalVisualizer:
         else:
             print("No motor commands sent yet".center(self.width))
 
-        # Audio Status
-        print()
-        print("-" * self.width)
-        print("AUDIO STATUS".center(self.width))
-
-        audio_state = system_state.get_audio_state()
-        if audio_state:
-            audio_sending = audio_state.get('audio_sending', False)
-            audio_mic = audio_state.get('audio_mic', 'None')
-            audio_muted = audio_state.get('audio_muted_channel', 'None')
-            
-            status_color = "\033[92m" if audio_sending else "\033[91m"  # Green or Red
-            status_text = "ACTIVE" if audio_sending else "INACTIVE"
-            
-            print(f"Audio Streaming: {status_color}{status_text}\033[0m".center(self.width))
-            if audio_mic != "None":
-                mic_text = f"Microphone: {audio_mic}"
-                print(mic_text.center(self.width))
-            
-            muted_text = "Muted Channels: "
-            if audio_muted == 'both':
-                muted_text += "Left & Right (Silent)"
-            elif audio_muted == 'left':
-                muted_text += "Left"
-            elif audio_muted == 'right':
-                muted_text += "Right"
-            else:
-                muted_text += "None"
-            
-            print(muted_text.center(self.width))
-        else:
-            print("Audio system not initialized".center(self.width))
-        
         # Connection status
         print()
         print("-" * self.width)
@@ -217,8 +184,32 @@ class TerminalVisualizer:
         moving_color = "\033[93m" if moving else "\033[96m"  # Yellow or Cyan
         lines.append(f"Motors: {moving_color}{moving_text}\033[0m".ljust(half_width + 10))
         
+        # Add audio status if available
+        if 'audio' in state:
+            audio = state.get('audio', {})
+            
+            # Audio playback status
+            playing = audio.get('playing', False)
+            playing_text = "ACTIVE" if playing else "MUTED"
+            playing_color = "\033[92m" if playing else "\033[90m"  # Green or Gray
+            lines.append(f"Audio: {playing_color}{playing_text}\033[0m".ljust(half_width + 10))
+            
+            # Muted channels
+            muted = audio.get('muted_channels', [])
+            muted_text = ", ".join(muted) if muted else "NONE"
+            lines.append(f"Muted: {muted_text}".ljust(half_width))
+            
+            # Streaming mic
+            streaming_mic = audio.get('streaming_mic', 'none')
+            if streaming_mic != 'none':
+                streaming_color = "\033[92m"  # Green
+                lines.append(f"Streaming: {streaming_color}{streaming_mic}\033[0m Mic".ljust(half_width + 10))
+            else:
+                streaming_color = "\033[90m"  # Gray
+                lines.append(f"Streaming: {streaming_color}OFF\033[0m".ljust(half_width + 10))
+        
         return lines
-    
+
     def _create_orientation_viz(self, y_angle: int, z_angle: int) -> List[str]:
         """Create ASCII art representation of orientation."""
         # Constants for visualization

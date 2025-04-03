@@ -79,18 +79,40 @@ fi
 
 # Check audio devices if audio is enabled
 if [ $DISABLE_AUDIO -eq 0 ]; then
-    echo "Checking audio devices..."
+    echo "Setting up audio devices..."
     
-    # Try to list audio devices
-    if command_exists arecord; then
-        echo "Audio recording devices:"
-        arecord -l
+    # Unmute all audio devices
+    if command_exists amixer; then
+        # Try to unmute master volume
+        amixer sset Master unmute >/dev/null 2>&1 || true
+        amixer sset Master 80% >/dev/null 2>&1 || true
+        
+        # Try to unmute any capture devices
+        amixer sset Capture unmute >/dev/null 2>&1 || true
+        amixer sset Capture 80% >/dev/null 2>&1 || true
+        
+        # Try to set TX 96Khz audio device unmuted if available
+        amixer -c 3 sset 'Speaker' unmute >/dev/null 2>&1 || true
+        amixer -c 3 sset 'Speaker' 80% >/dev/null 2>&1 || true
+        amixer -c 3 sset 'Mic' unmute >/dev/null 2>&1 || true
+        amixer -c 3 sset 'Mic' 80% >/dev/null 2>&1 || true
     fi
     
-    if command_exists aplay; then
-        echo "Audio playback devices:"
-        aplay -l
+    # Set PulseAudio volume levels if PulseAudio is running
+    if command_exists pactl; then
+        # Try to set default sink volume
+        pactl set-sink-volume @DEFAULT_SINK@ 80% >/dev/null 2>&1 || true
+        pactl set-sink-mute @DEFAULT_SINK@ 0 >/dev/null 2>&1 || true
+        
+        # Try to set default source volume
+        pactl set-source-volume @DEFAULT_SOURCE@ 80% >/dev/null 2>&1 || true
+        pactl set-source-mute @DEFAULT_SOURCE@ 0 >/dev/null 2>&1 || true
     fi
+    
+    # Make sure required Python audio packages are installed
+    pip3 install pyaudio pydub >/dev/null 2>&1 || echo "Warning: Could not install audio packages - audio functionality may be limited"
+    
+    echo "Audio setup complete"
 fi
 
 # Check for cameras if video is enabled

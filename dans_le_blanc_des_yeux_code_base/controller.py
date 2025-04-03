@@ -226,7 +226,7 @@ if __name__ == "__main__":
             audio_params = {}
             if 'audio' in config:
                 try:
-                    # Any audio-specific configuration can be added here
+                    # Add any audio-specific configuration here
                     print(f"Using audio settings from config: {audio_params}")
                 except (ValueError, configparser.Error) as e:
                     print(f"Error reading audio config: {e}. Using defaults.")
@@ -235,8 +235,7 @@ if __name__ == "__main__":
             print("Starting audio system...")
             try:
                 audio_system = AudioSystem(remote_ip)
-                if not audio_system.start():
-                    print("Warning: Failed to start audio system. Audio functionality will be limited.")
+                audio_system.start()
             except Exception as e:
                 print(f"Error starting audio system: {e}")
                 print("Audio functionality will be limited")
