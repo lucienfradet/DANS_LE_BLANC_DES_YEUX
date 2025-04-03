@@ -1,7 +1,6 @@
 """
 Thread-safe state management for the Dans le Blanc des Yeux project.
 Uses a singleton pattern to ensure a single state instance across the application.
-Enhanced with audio state tracking.
 """
 
 import threading
@@ -46,14 +45,6 @@ class SystemState:
             "y": 0,
             "z": 0,
             "timestamp": 0
-        }
-        
-        # Audio state for visualization
-        self._audio_state = {
-            "mode": "none",              # Current audio playback mode
-            "left_level": 0,             # Left channel audio level (0-10)
-            "right_level": 0,            # Right channel audio level (0-10)
-            "last_update": 0             # Last time audio levels were updated
         }
         
         # Configuration
@@ -124,46 +115,6 @@ class SystemState:
         
         # Notify observers of motor command
         self._notify_observers("motor_command")
-    
-    def get_audio_state(self) -> Dict[str, Any]:
-        """Get the current audio state."""
-        with self._state_lock:
-            return self._audio_state.copy()
-    
-    def update_audio_state(self, data: Dict[str, Any]) -> None:
-        """Update the audio state information."""
-        with self._state_lock:
-            changed = False
-            for key, value in data.items():
-                if key in self._audio_state and self._audio_state[key] != value:
-                    self._audio_state[key] = value
-                    changed = True
-            
-            # Always update timestamp when audio state changes
-            if changed:
-                self._audio_state["last_update"] = time.time()
-        
-        if changed:
-            self._notify_observers("audio_state")
-    
-    def update_audio_levels(self, left_level: int, right_level: int) -> None:
-        """Update just the audio level information."""
-        with self._state_lock:
-            # Normalize levels to 0-10 range
-            left_level = min(10, max(0, left_level))
-            right_level = min(10, max(0, right_level))
-            
-            # Check if levels have changed
-            changed = (self._audio_state["left_level"] != left_level or 
-                      self._audio_state["right_level"] != right_level)
-            
-            if changed:
-                self._audio_state["left_level"] = left_level
-                self._audio_state["right_level"] = right_level
-                self._audio_state["last_update"] = time.time()
-                
-                # Only notify if levels have changed
-                self._notify_observers("audio_state")
     
     def add_observer(self, callback: Callable[[str], None]) -> None:
         """Add an observer to be notified of state changes."""
