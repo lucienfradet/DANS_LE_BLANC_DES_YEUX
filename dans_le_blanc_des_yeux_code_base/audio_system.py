@@ -231,26 +231,49 @@ class AudioSystem:
     def stop(self) -> None:
         """Stop the audio system and release resources."""
         print("Stopping audio system...")
+        # First, set the shutdown flag to signal threads to exit
+        self.is_shutting_down = True
+        
+        # Then set running to false
         self.running = False
         
-        # Wait for threads to finish
-        for thread in self.threads:
-            thread.join(timeout=1.0)
+        # Stop all audio operations before joining threads
+        self._stop_audio_operations()
         
-        # Close audio streams
+        # Wait for threads to finish with longer timeout
+        # This gives threads more time to exit their loops
+        for thread in self.threads:
+            thread.join(timeout=3.0)
+        
+        print("Audio system stopped")
+    
+    def _stop_audio_operations(self):
+        """Stop all audio operations before thread shutdown."""
+        # First, close audio streams - do this in main thread to avoid Qt timer issues
         self._close_audio_streams()
         
         # Close sockets
-        if self.send_socket:
-            self.send_socket.close()
-        if self.receive_socket:
-            self.receive_socket.close()
+        try:
+            if self.send_socket:
+                self.send_socket.close()
+                self.send_socket = None
+        except Exception as e:
+            print(f"Error closing send socket: {e}")
+            
+        try:
+            if self.receive_socket:
+                self.receive_socket.close()
+                self.receive_socket = None
+        except Exception as e:
+            print(f"Error closing receive socket: {e}")
         
-        # Terminate PyAudio
-        if self.p:
-            self.p.terminate()
-        
-        print("Audio system stopped")
+        # Terminate PyAudio - always do this last after all streams are closed
+        try:
+            if self.p:
+                self.p.terminate()
+                self.p = None
+        except Exception as e:
+            print(f"Error terminating PyAudio: {e}")
     
     def _start_audio_streams(self) -> bool:
         """Initialize all audio streams (inputs and outputs)."""
@@ -309,7 +332,8 @@ class AudioSystem:
         # Close personal mic stream
         if self.personal_mic_stream:
             try:
-                self.personal_mic_stream.stop_stream()
+                if self.personal_mic_stream.is_active():
+                    self.personal_mic_stream.stop_stream()
                 self.personal_mic_stream.close()
             except Exception as e:
                 print(f"Error closing personal mic stream: {e}")
@@ -318,16 +342,18 @@ class AudioSystem:
         # Close global mic stream
         if self.global_mic_stream:
             try:
-                self.global_mic_stream.stop_stream()
+                if self.global_mic_stream.is_active():
+                    self.global_mic_stream.stop_stream()
                 self.global_mic_stream.close()
             except Exception as e:
                 print(f"Error closing global mic stream: {e}")
             self.global_mic_stream = None
         
-        # Close output stream
+        # Close output stream - make sure to stop it first
         if self.output_stream:
             try:
-                self.output_stream.stop_stream()
+                if self.output_stream.is_active():
+                    self.output_stream.stop_stream()
                 self.output_stream.close()
             except Exception as e:
                 print(f"Error closing output stream: {e}")
@@ -335,6 +361,9 @@ class AudioSystem:
     
     def _personal_mic_callback(self, in_data, frame_count, time_info, status):
         """Callback for personal mic stream."""
+        if self.is_shutting_down:
+            return (None, pyaudio.paComplete)
+            
         if in_data:
             # Convert bytes to numpy array
             try:
@@ -359,6 +388,9 @@ class AudioSystem:
     
     def _global_mic_callback(self, in_data, frame_count, time_info, status):
         """Callback for global mic stream."""
+        if self.is_shutting_down:
+            return (None, pyaudio.paComplete)
+            
         if in_data:
             # Convert bytes to numpy array
             try:
