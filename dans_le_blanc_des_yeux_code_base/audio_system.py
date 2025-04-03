@@ -25,7 +25,6 @@ import pyaudio
 import configparser
 from typing import Dict, Optional, List, Tuple, Any
 
-# Note: You may need to update system_state.py to add audio state support
 from system_state import system_state
 
 # Port configuration
@@ -45,8 +44,7 @@ class AudioSystem:
         self.pa = None
         
         # Audio parameters
-        self.output_channels = 2      # Stereo output
-        self.input_channels = 1       # Mono input (will detect from device)
+        self.channels = 2           # Stereo
         self.rate = 44100           # Sample rate (Hz)
         self.chunk_size = 1024      # Frames per buffer
         self.format = None          # Will be set during initialization
@@ -252,15 +250,15 @@ class AudioSystem:
                 
                 # Find output device (any device with output channels)
                 if device_info['maxOutputChannels'] > 0:
-                    output_devices.append((i, device_name, device_info['maxOutputChannels']))
+                    output_devices.append((i, device_name))
                 
                 # Find personal mic
                 if self.personal_mic_name.lower() in device_name.lower() and device_info['maxInputChannels'] > 0:
-                    personal_mic_candidates.append((i, device_name, device_info['maxInputChannels']))
+                    personal_mic_candidates.append((i, device_name))
                 
                 # Find global mic
                 if self.global_mic_name.lower() in device_name.lower() and device_info['maxInputChannels'] > 0:
-                    global_mic_candidates.append((i, device_name, device_info['maxInputChannels']))
+                    global_mic_candidates.append((i, device_name))
             except Exception as e:
                 print(f"  Error reading device {i}: {e}")
         
@@ -274,33 +272,27 @@ class AudioSystem:
             
         if personal_mic_candidates:
             self.personal_mic_id = personal_mic_candidates[0][0]
-            # Store input channel count
-            self.personal_mic_channels = personal_mic_candidates[0][2]
-            print(f"Selected personal mic: {personal_mic_candidates[0][1]} (ID: {self.personal_mic_id}, Channels: {self.personal_mic_channels})")
+            print(f"Selected personal mic: {personal_mic_candidates[0][1]} (ID: {self.personal_mic_id})")
         else:
             print(f"Personal mic '{self.personal_mic_name}' not found")
             # Use default input device as fallback
             try:
                 default_input = self.pa.get_default_input_device_info()
                 self.personal_mic_id = default_input['index']
-                self.personal_mic_channels = default_input['maxInputChannels']
-                print(f"Using default input device as personal mic: {default_input['name']} (ID: {self.personal_mic_id}, Channels: {self.personal_mic_channels})")
+                print(f"Using default input device as personal mic: {default_input['name']} (ID: {self.personal_mic_id})")
             except Exception as e:
                 print(f"Error getting default input device: {e}")
                 return False
             
         if global_mic_candidates:
             self.global_mic_id = global_mic_candidates[0][0]
-            # Store input channel count
-            self.global_mic_channels = global_mic_candidates[0][2]
-            print(f"Selected global mic: {global_mic_candidates[0][1]} (ID: {self.global_mic_id}, Channels: {self.global_mic_channels})")
+            print(f"Selected global mic: {global_mic_candidates[0][1]} (ID: {self.global_mic_id})")
         else:
             print(f"Global mic '{self.global_mic_name}' not found")
             # If global mic isn't found but personal mic is available, use it as fallback
             if self.personal_mic_id is not None:
                 self.global_mic_id = self.personal_mic_id
-                self.global_mic_channels = self.personal_mic_channels
-                print(f"Using personal mic as global mic fallback (Channels: {self.global_mic_channels})")
+                print(f"Using personal mic as global mic fallback")
             else:
                 return False
                 
@@ -315,39 +307,14 @@ class AudioSystem:
             # Create receiver socket
             self.receiver_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.receiver_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            
-            # Set buffer size for better performance
-            self.receiver_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
-            self.sender_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
-            
-            # Bind to port
             self.receiver_socket.bind(("0.0.0.0", AUDIO_STREAM_PORT))
             self.receiver_socket.settimeout(0.5)  # Set timeout for responsive shutdown
             
             print(f"Audio network initialized on port {AUDIO_STREAM_PORT}")
-            
-            # Additional audio setup for mixer/volume
-            self._setup_audio_mixer()
-            
             return True
         except Exception as e:
             print(f"Error initializing audio network: {e}")
             return False
-    
-    def _setup_audio_mixer(self) -> None:
-        """Try to setup ALSA mixer (volume) settings."""
-        try:
-            if os.system("which amixer > /dev/null") == 0:
-                # Set master volume to 80%
-                os.system("amixer set Master 80% unmute > /dev/null 2>&1")
-                # Try to unmute specific devices 
-                if self.personal_mic_name == "TX 96Khz":
-                    os.system("amixer -c 3 set 'Speaker' 80% unmute > /dev/null 2>&1")
-                    os.system("amixer -c 3 set 'Mic' 80% unmute > /dev/null 2>&1")
-                print("Set audio mixer levels")
-        except Exception as e:
-            print(f"Could not setup audio mixer: {e}")
-            # Non-critical error, continue anyway
     
     def _init_audio_streams(self) -> bool:
         """Initialize audio input and output streams."""
@@ -355,7 +322,7 @@ class AudioSystem:
             # Initialize output stream (always running)
             self.output_stream = self.pa.open(
                 format=self.format,
-                channels=self.output_channels,  # Always stereo output
+                channels=self.channels,
                 rate=self.rate,
                 output=True,
                 output_device_index=self.output_device_id,
@@ -383,51 +350,21 @@ class AudioSystem:
             self.input_stream = None
         
         try:
-            # Determine the number of input channels to use
-            num_channels = 1  # Default to mono input
-            
-            # Check if this is personal or global mic and use stored channels info
-            if device_id == self.personal_mic_id:
-                num_channels = self.personal_mic_channels
-                print(f"Using {num_channels} channel(s) for personal mic")
-            elif device_id == self.global_mic_id:
-                num_channels = self.global_mic_channels
-                print(f"Using {num_channels} channel(s) for global mic")
-            
             # Open new input stream
             self.input_stream = self.pa.open(
                 format=self.format,
-                channels=num_channels,  # Use actual number of channels the device supports
+                channels=self.channels,
                 rate=self.rate,
                 input=True,
                 input_device_index=device_id,
                 frames_per_buffer=self.chunk_size
             )
             
-            # Store the current input channels for processing
-            self.current_input_channels = num_channels
-            
-            print(f"Opened input stream for device ID {device_id} with {num_channels} channel(s)")
+            print(f"Opened input stream for device ID {device_id}")
             return True
         except Exception as e:
             print(f"Error opening input stream for device {device_id}: {e}")
-            # Try with reduced settings as fallback
-            try:
-                print("Trying fallback configuration...")
-                self.input_stream = self.pa.open(
-                    format=self.format,
-                    channels=1,  # Force mono
-                    rate=22050,  # Lower sample rate
-                    input=True,
-                    input_device_index=device_id,
-                    frames_per_buffer=512  # Smaller buffer
-                )
-                self.current_input_channels = 1
-                print(f"Opened input stream with fallback settings (mono, 22kHz)")
-                return True
-            except Exception as fallback_error:
-                print(f"Fallback also failed: {fallback_error}")
-                return False
+            return False
     
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
@@ -504,15 +441,6 @@ class AudioSystem:
             "audio_mic": self.current_mic if self.current_mic else "None",
             "audio_muted_channel": self.muted_channel
         }
-        
-        # Add device details for debugging
-        if hasattr(self, 'personal_mic_id') and self.personal_mic_id is not None:
-            audio_state["personal_mic_id"] = self.personal_mic_id
-        if hasattr(self, 'global_mic_id') and self.global_mic_id is not None:
-            audio_state["global_mic_id"] = self.global_mic_id
-        if hasattr(self, 'output_device_id') and self.output_device_id is not None:
-            audio_state["output_device_id"] = self.output_device_id
-        
         system_state.update_audio_state(audio_state)
     
     def _audio_sender_loop(self) -> None:
@@ -532,13 +460,6 @@ class AudioSystem:
                 input_data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
                 
                 if input_data:
-                    # Convert mono to stereo if needed (we need to send stereo for consistent processing)
-                    if hasattr(self, 'current_input_channels') and self.current_input_channels == 1:
-                        # Convert mono audio to stereo
-                        mono_data = np.frombuffer(input_data, dtype=np.int16)
-                        stereo_data = np.column_stack((mono_data, mono_data))  # Duplicate mono to both channels
-                        input_data = stereo_data.tobytes()
-                        
                     # Send audio data to remote
                     self.sender_socket.sendto(input_data, (self.remote_ip, AUDIO_STREAM_PORT))
                     
@@ -553,8 +474,6 @@ class AudioSystem:
             except Exception as e:
                 if self.running and not self.stop_event.is_set():
                     print(f"Error in audio sender: {e}")
-                    import traceback
-                    traceback.print_exc()
                 time.sleep(0.1)
         
         print("Audio sender thread stopped")
@@ -572,53 +491,34 @@ class AudioSystem:
                 data, addr = self.receiver_socket.recvfrom(self.buffer_size)
                 
                 if data and self.output_stream is not None:
-                    try:
-                        # Convert bytes to numpy array for processing
-                        # Ensure we're getting stereo data
-                        audio_data = np.frombuffer(data, dtype=np.int16)
-                        
-                        # Make sure we can reshape it to stereo
-                        if len(audio_data) % 2 == 0:
-                            audio_data = audio_data.reshape(-1, 2)
-                            
-                            # Apply channel muting based on current state
-                            if self.muted_channel == 'left':
-                                audio_data[:, 0] = 0  # Mute left channel
-                                print("Muting LEFT channel") if packet_counter % 500 == 0 else None
-                            elif self.muted_channel == 'right':
-                                audio_data[:, 1] = 0  # Mute right channel
-                                print("Muting RIGHT channel") if packet_counter % 500 == 0 else None
-                            elif self.muted_channel == 'both':
-                                audio_data[:, :] = 0  # Mute both channels
-                                print("Muting BOTH channels") if packet_counter % 500 == 0 else None
-                            
-                            # Apply volume amplification (optional)
-                            # Uncomment if you need to boost volume
-                            # audio_data = np.clip(audio_data * 2, -32768, 32767).astype(np.int16)
-                            
-                            # Write processed audio to output stream
-                            self.output_stream.write(audio_data.tobytes())
-                        else:
-                            print(f"Received odd-length audio data: {len(audio_data)} samples")
-                        
-                        # Report stats periodically
-                        packet_counter += 1
-                        if packet_counter % 1000 == 0:
-                            now = time.time()
-                            elapsed = now - last_report_time
-                            rate = 1000 / elapsed if elapsed > 0 else 0
-                            print(f"Audio receiver: received {packet_counter} packets, {rate:.1f} packets/second")
-                            last_report_time = now
-                    except Exception as process_error:
-                        print(f"Error processing audio data: {process_error}")
+                    # Convert bytes to numpy array for processing
+                    audio_data = np.frombuffer(data, dtype=np.int16).reshape(-1, self.channels)
+                    
+                    # Apply channel muting based on current state
+                    if self.muted_channel == 'left':
+                        audio_data[:, 0] = 0  # Mute left channel
+                    elif self.muted_channel == 'right':
+                        audio_data[:, 1] = 0  # Mute right channel
+                    elif self.muted_channel == 'both':
+                        audio_data[:, :] = 0  # Mute both channels
+                    
+                    # Write processed audio to output stream
+                    self.output_stream.write(audio_data.tobytes())
+                    
+                    # Report stats periodically
+                    packet_counter += 1
+                    if packet_counter % 1000 == 0:
+                        now = time.time()
+                        elapsed = now - last_report_time
+                        rate = 1000 / elapsed if elapsed > 0 else 0
+                        print(f"Audio receiver: received {packet_counter} packets, {rate:.1f} packets/second")
+                        last_report_time = now
             except socket.timeout:
                 # This is expected due to the socket timeout
                 pass
             except Exception as e:
                 if self.running and not self.stop_event.is_set():
                     print(f"Error in audio receiver: {e}")
-                    import traceback
-                    traceback.print_exc()
                 time.sleep(0.1)
         
         print("Audio receiver thread stopped")
