@@ -2,20 +2,17 @@
 Audio streaming module for the Dans le Blanc des Yeux installation.
 Handles capturing and sending audio streams between devices using UDP.
 
-Streaming Logic:
-1. When remote device has pressure=true and local doesn't:
-   - Stream USB Audio Device mic to remote device
-   - Receive personal mic from remote device
-
-2. When local device has pressure=true and remote doesn't:
-   - Receive USB Audio Device mic from remote device
-   - Stream personal mic to remote device
-
-3. When both have pressure=true:
-   - Stream personal mic to remote device
-   - Receive personal mic from remote device
-
-4. When neither has pressure: No streaming required
+Fixed streaming logic:
+1. When both have pressure:
+   - Stream personal mic (TX) to remote device
+   
+2. When remote has pressure and local doesn't:
+   - Stream global mic (USB) to remote device
+   
+3. When local has pressure and remote doesn't:
+   - Stream personal mic (TX) to remote device
+   
+4. When neither has pressure: No streaming
 """
 
 import os
@@ -39,8 +36,7 @@ RATE = 44100
 DEVICE_SEARCH_INTERVAL = 30  # Seconds between device searches
 
 # Network configuration
-AUDIO_PORT_PERSONAL_MIC = 6000  # Port for personal mic audio stream
-AUDIO_PORT_GLOBAL_MIC = 6001  # Port for USB Audio Device mic stream
+AUDIO_PORT = 6000  # Single port for audio streaming
 
 class AudioStreamer:
     """Handles audio streaming between devices."""
@@ -54,7 +50,6 @@ class AudioStreamer:
         # Device IDs
         self.personal_mic_id = None
         self.global_mic_id = None
-        self.personal_speaker_id = None
         
         # Audio device names (will be loaded from config)
         self.personal_mic_name = "TX 96Khz"
@@ -64,8 +59,7 @@ class AudioStreamer:
         self._load_config()
         
         # Streaming state
-        self.personal_mic_sending = False
-        self.global_mic_sending = False
+        self.current_mic_sending = None  # "personal" or "global" or None
         
         # Threading
         self.running = False
@@ -131,7 +125,6 @@ class AudioStreamer:
         # Reset device IDs
         self.personal_mic_id = None
         self.global_mic_id = None
-        self.personal_speaker_id = None
         
         # Print all audio devices for debugging
         print("\nAudio devices available:")
@@ -146,39 +139,37 @@ class AudioStreamer:
         for i in range(self.p.get_device_count()):
             dev_info = self.p.get_device_info_by_index(i)
             
-            # Check for personal mic device
-            if self.personal_mic_name in dev_info["name"]:
-                if dev_info["maxInputChannels"] > 0:
-                    self.personal_mic_id = i
-                    print(f"Found {self.personal_mic_name} mic: Device {i}")
-                if dev_info["maxOutputChannels"] > 0:
-                    self.personal_speaker_id = i
-                    print(f"Found {self.personal_mic_name} speaker: Device {i}")
+            # Check for TX personal mic device
+            if self.personal_mic_name in dev_info["name"] and dev_info["maxInputChannels"] > 0:
+                self.personal_mic_id = i
+                print(f"Found {self.personal_mic_name} mic: Device {i}")
             
             # Check for USB Audio Device mic
             elif self.global_mic_name in dev_info["name"] and dev_info["maxInputChannels"] > 0:
                 self.global_mic_id = i
                 print(f"Found {self.global_mic_name} mic: Device {i}")
-            
-            # Fallback: any USB Audio with input channels but not personal device
-            elif "USB Audio" in dev_info["name"] and self.personal_mic_name not in dev_info["name"] and dev_info["maxInputChannels"] > 0:
-                if self.global_mic_id is None:
+        
+        # Fallback: any USB Audio with input channels but not personal device
+        if self.global_mic_id is None:
+            for i in range(self.p.get_device_count()):
+                dev_info = self.p.get_device_info_by_index(i)
+                if ("USB Audio" in dev_info["name"] and 
+                    self.personal_mic_name not in dev_info["name"] and 
+                    dev_info["maxInputChannels"] > 0):
                     self.global_mic_id = i
                     print(f"Found fallback USB mic: Device {i}")
+                    break
         
         # Log the devices we found
         print(f"{self.personal_mic_name} mic ID: {self.personal_mic_id}")
         print(f"{self.global_mic_name} mic ID: {self.global_mic_id}")
-        print(f"{self.personal_mic_name} speaker ID: {self.personal_speaker_id}")
         
-        # If we're missing any devices, warn
+        # If we're missing devices, warn
         missing_devices = []
         if self.personal_mic_id is None:
             missing_devices.append(f"{self.personal_mic_name} microphone")
         if self.global_mic_id is None:
             missing_devices.append(f"{self.global_mic_name} microphone")
-        if self.personal_speaker_id is None:
-            missing_devices.append(f"{self.personal_mic_name} speaker")
         
         if missing_devices:
             print(f"Warning: Could not find these audio devices: {', '.join(missing_devices)}")
@@ -191,8 +182,11 @@ class AudioStreamer:
         print("Starting audio streamer...")
         self.running = True
         
-        # Start receiver threads
-        self._start_receiver_threads()
+        # Start receiver thread
+        receiver_thread = threading.Thread(target=self._receiver_loop)
+        receiver_thread.daemon = True
+        receiver_thread.start()
+        self.threads.append(receiver_thread)
         
         # Start device monitor thread
         monitor_thread = threading.Thread(target=self._device_monitor_loop)
@@ -212,7 +206,7 @@ class AudioStreamer:
         self.running = False
         
         # Stop any active streaming
-        self._stop_all_streams()
+        self._stop_streaming()
         
         # Wait for threads to finish
         for thread in self.threads:
@@ -244,27 +238,24 @@ class AudioStreamer:
         
         # Only proceed if remote is connected
         if not remote_state.get("connected", False):
-            self._stop_all_streams()
+            self._stop_streaming()
             return
         
-        # Case 1: Both have pressure - stream personal mic in both directions
+        # Case 1: Both have pressure - stream personal mic (TX)
         if local_state.get("pressure", False) and remote_state.get("pressure", False):
-            self._start_personal_mic_stream()
-            self._stop_global_mic_stream()
+            self._start_streaming("personal")
         
-        # Case 2: Remote has pressure but local doesn't - stream global mic and receive personal mic
+        # Case 2: Remote has pressure but local doesn't - stream global mic (USB)
         elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
-            self._stop_personal_mic_stream()
-            self._start_global_mic_stream()
+            self._start_streaming("global")
         
-        # Case 3: Local has pressure but remote doesn't - stream personal mic and receive global mic
+        # Case 3: Local has pressure but remote doesn't - stream personal mic (TX)
         elif local_state.get("pressure", False) and not remote_state.get("pressure", False):
-            self._start_personal_mic_stream()
-            self._stop_global_mic_stream()
+            self._start_streaming("personal")
         
         # Case 4: No pressure on either - no streaming
         else:
-            self._stop_all_streams()
+            self._stop_streaming()
     
     def _device_monitor_loop(self) -> None:
         """Periodically check for audio devices in case they disconnect/reconnect."""
@@ -282,74 +273,54 @@ class AudioStreamer:
             # Sleep to avoid consuming CPU
             time.sleep(5)
     
-    def _start_receiver_threads(self) -> None:
-        """Start threads to receive audio streams."""
-        # Start personal mic receiver thread
-        personal_mic_receiver = threading.Thread(target=self._personal_mic_receiver_loop)
-        personal_mic_receiver.daemon = True
-        personal_mic_receiver.start()
-        self.threads.append(personal_mic_receiver)
+    def _start_streaming(self, mic_type: str) -> bool:
+        """Start streaming from specified mic to remote device.
         
-        # Start USB Audio Device mic receiver thread
-        global_mic_receiver = threading.Thread(target=self._global_mic_receiver_loop)
-        global_mic_receiver.daemon = True
-        global_mic_receiver.start()
-        self.threads.append(global_mic_receiver)
-    
-    def _start_personal_mic_stream(self) -> bool:
-        """Start streaming from personal mic to remote device."""
-        if self.personal_mic_sending or self.personal_mic_id is None:
-            return False
+        Args:
+            mic_type: Either "personal" for TX mic or "global" for USB mic
+        """
+        # If already streaming the correct mic, do nothing
+        if self.current_mic_sending == mic_type:
+            return True
+            
+        # Stop any current streaming
+        self._stop_streaming()
+        
+        if mic_type == "personal":
+            if self.personal_mic_id is None:
+                print("Personal mic (TX) not available")
+                return False
+                
+            mic_id = self.personal_mic_id
+            mic_name = self.personal_mic_name
+        else:  # global
+            if self.global_mic_id is None:
+                print("Global mic (USB) not available")
+                return False
+                
+            mic_id = self.global_mic_id
+            mic_name = self.global_mic_name
         
         try:
             # Start sender thread
-            sender_thread = threading.Thread(target=self._personal_mic_sender_loop)
+            sender_thread = threading.Thread(
+                target=self._sender_loop, 
+                args=(mic_id, mic_type)
+            )
             sender_thread.daemon = True
             sender_thread.start()
             self.threads.append(sender_thread)
             
-            self.personal_mic_sending = True
-            print(f"Started personal mic stream to {self.remote_ip}:{AUDIO_PORT_PERSONAL_MIC}")
+            self.current_mic_sending = mic_type
+            print(f"Started {mic_name} stream to {self.remote_ip}:{AUDIO_PORT}")
             return True
         except Exception as e:
-            print(f"Failed to start personal mic stream: {e}")
+            print(f"Failed to start {mic_name} stream: {e}")
             return False
     
-    def _start_global_mic_stream(self) -> bool:
-        """Start streaming from USB Audio Device mic to remote device."""
-        if self.global_mic_sending or self.global_mic_id is None:
-            return False
-        
-        try:
-            # Start sender thread
-            sender_thread = threading.Thread(target=self._global_mic_sender_loop)
-            sender_thread.daemon = True
-            sender_thread.start()
-            self.threads.append(sender_thread)
-            
-            self.global_mic_sending = True
-            print(f"Started USB Audio Device mic stream to {self.remote_ip}:{AUDIO_PORT_GLOBAL_MIC}")
-            return True
-        except Exception as e:
-            print(f"Failed to start USB Audio Device mic stream: {e}")
-            return False
-    
-    def _stop_personal_mic_stream(self) -> None:
-        """Stop streaming from personal mic."""
-        if self.personal_mic_sending:
-            self.personal_mic_sending = False
-            print("Stopped personal mic stream")
-    
-    def _stop_global_mic_stream(self) -> None:
-        """Stop streaming from USB Audio Device mic."""
-        if self.global_mic_sending:
-            self.global_mic_sending = False
-            print("Stopped USB Audio Device mic stream")
-    
-    def _stop_all_streams(self) -> None:
-        """Stop all active streams."""
-        self._stop_personal_mic_stream()
-        self._stop_global_mic_stream()
+    def _stop_streaming(self) -> None:
+        """Stop all active streaming."""
+        self.current_mic_sending = None
         print("All audio streams stopped")
     
     def _create_udp_socket(self) -> socket.socket:
@@ -358,47 +329,47 @@ class AudioStreamer:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
         return sock
     
-    def _create_receiver_socket(self, port: int) -> socket.socket:
+    def _create_receiver_socket(self) -> socket.socket:
         """Create a UDP socket for receiving audio."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
-        sock.bind(("0.0.0.0", port))
+        sock.bind(("0.0.0.0", AUDIO_PORT))
         sock.settimeout(0.5)  # Set a timeout for responsive shutdown
         return sock
     
-    def _personal_mic_sender_loop(self) -> None:
-        """Send personal mic audio to remote device."""
-        if self.personal_mic_id is None:
-            print("personal mic not available")
-            self.personal_mic_sending = False
+    def _sender_loop(self, mic_id: int, mic_type: str) -> None:
+        """Send audio from specified mic to remote device."""
+        if mic_id is None:
+            print(f"{mic_type} mic not available")
+            self.current_mic_sending = None
             return
         
-        print(f"Starting personal mic sender to {self.remote_ip}:{AUDIO_PORT_PERSONAL_MIC}")
+        print(f"Starting {mic_type} mic sender to {self.remote_ip}:{AUDIO_PORT}")
         
         sock = self._create_udp_socket()
         stream = None
         
         try:
             # Get device info to check actual channel count
-            device_info = self.p.get_device_info_by_index(self.personal_mic_id)
+            device_info = self.p.get_device_info_by_index(mic_id)
             input_channels = int(device_info.get('maxInputChannels', 1))
             
-            print(f"Personal mic has {input_channels} input channels")
+            print(f"{mic_type.capitalize()} mic has {input_channels} input channels")
             
-            # Create PyAudio stream for personal mic with correct channel count
+            # Create PyAudio stream for mic with correct channel count
             stream = self.p.open(
                 format=FORMAT,
                 channels=input_channels,  # Use actual channel count from device
                 rate=RATE,
                 input=True,
                 frames_per_buffer=CHUNK_SIZE,
-                input_device_index=self.personal_mic_id
+                input_device_index=mic_id
             )
             
             seq_num = 0
             
-            while self.running and self.personal_mic_sending:
+            while self.running and self.current_mic_sending == mic_type:
                 try:
                     # Read audio data
                     data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
@@ -410,91 +381,32 @@ class AudioStreamer:
                         stereo_data = np.repeat(mono_data, 2)
                         data = stereo_data.tobytes()
                     
-                    # Create packet with sequence number
-                    packet = struct.pack(">I", seq_num) + data
+                    # Add mic type identifier (0 for personal, 1 for global)
+                    mic_id_byte = b'\x00' if mic_type == "personal" else b'\x01'
+                    
+                    # Create packet with sequence number and mic type
+                    packet = struct.pack(">I", seq_num) + mic_id_byte + data
                     
                     # Send packet
-                    sock.sendto(packet, (self.remote_ip, AUDIO_PORT_PERSONAL_MIC))
+                    sock.sendto(packet, (self.remote_ip, AUDIO_PORT))
                     
                     seq_num += 1
                     
                 except Exception as e:
-                    if self.running and self.personal_mic_sending:
-                        print(f"Error in personal mic sender: {e}")
+                    if self.running and self.current_mic_sending == mic_type:
+                        print(f"Error in {mic_type} mic sender: {e}")
                         time.sleep(1.0)
         finally:
             if stream:
                 stream.stop_stream()
                 stream.close()
             sock.close()
-            print("personal mic sender stopped")
-
-    def _global_mic_sender_loop(self) -> None:
-        """Send USB Audio Device mic audio to remote device."""
-        if self.global_mic_id is None:
-            print("USB Audio Device mic not available")
-            self.global_mic_sending = False
-            return
-        
-        print(f"Starting USB Audio Device mic sender to {self.remote_ip}:{AUDIO_PORT_GLOBAL_MIC}")
-        
-        sock = self._create_udp_socket()
-        stream = None
-        
-        try:
-            # Get device info to check actual channel count
-            device_info = self.p.get_device_info_by_index(self.global_mic_id)
-            input_channels = int(device_info.get('maxInputChannels', 1))
-            
-            print(f"Global mic has {input_channels} input channels")
-            
-            # Create PyAudio stream for USB Audio Device mic with correct channel count
-            stream = self.p.open(
-                format=FORMAT,
-                channels=input_channels,  # Use actual channel count from device
-                rate=RATE,
-                input=True,
-                frames_per_buffer=CHUNK_SIZE,
-                input_device_index=self.global_mic_id
-            )
-            
-            seq_num = 0
-            
-            while self.running and self.global_mic_sending:
-                try:
-                    # Read audio data
-                    data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-                    
-                    # If input is mono but we need stereo for output, convert mono to stereo
-                    if input_channels == 1 and CHANNELS == 2:
-                        # Convert mono to stereo by duplicating each sample
-                        mono_data = np.frombuffer(data, dtype=np.int16)
-                        stereo_data = np.repeat(mono_data, 2)
-                        data = stereo_data.tobytes()
-                    
-                    # Create packet with sequence number
-                    packet = struct.pack(">I", seq_num) + data
-                    
-                    # Send packet
-                    sock.sendto(packet, (self.remote_ip, AUDIO_PORT_GLOBAL_MIC))
-                    
-                    seq_num += 1
-                    
-                except Exception as e:
-                    if self.running and self.global_mic_sending:
-                        print(f"Error in USB Audio Device mic sender: {e}")
-                        time.sleep(1.0)
-        finally:
-            if stream:
-                stream.stop_stream()
-                stream.close()
-            sock.close()
-            print("USB Audio Device mic sender stopped")
+            print(f"{mic_type} mic sender stopped")
     
-    def _personal_mic_receiver_loop(self) -> None:
-        """Receive personal mic audio from remote device."""
-        print(f"Starting personal mic receiver on port {AUDIO_PORT_PERSONAL_MIC}")
-        sock = self._create_receiver_socket(AUDIO_PORT_PERSONAL_MIC)
+    def _receiver_loop(self) -> None:
+        """Receive audio from remote device."""
+        print(f"Starting audio receiver on port {AUDIO_PORT}")
+        sock = self._create_receiver_socket()
         
         buffer = {}  # Store packets by sequence number for reordering
         next_seq = 0  # Next expected sequence number
@@ -506,86 +418,30 @@ class AudioStreamer:
                     # Receive packet with sequence number
                     data, addr = sock.recvfrom(65536)
                     
-                    if len(data) < 4:  # Need at least 4 bytes for sequence number
+                    if len(data) < 5:  # Need 4 bytes for seq num + 1 for mic ID
                         continue
                     
                     # First 4 bytes contain the sequence number
                     seq_num = struct.unpack(">I", data[:4])[0]
                     
+                    # Next byte indicates mic type (0=personal, 1=global)
+                    mic_type_byte = data[4:5]
+                    
                     # Rest of the packet contains the audio data
-                    audio_data = data[4:]
+                    audio_data = data[5:]
                     
                     # Add to buffer
-                    buffer[seq_num] = audio_data
+                    buffer[seq_num] = (mic_type_byte, audio_data)
                     
                     # Process packets in order
                     while next_seq in buffer:
                         # Get the next packet
-                        audio_data = buffer.pop(next_seq)
+                        mic_type_byte, audio_data = buffer.pop(next_seq)
                         
-                        # Call callback if registered
-                        if self.on_personal_mic_received:
+                        # Call appropriate callback based on mic type
+                        if mic_type_byte == b'\x00' and self.on_personal_mic_received:
                             self.on_personal_mic_received(audio_data)
-                        
-                        next_seq += 1
-                    
-                    # Limit buffer size by dropping old packets
-                    if len(buffer) > buffer_size:
-                        # If buffer is too large, find the lowest sequence number
-                        seq_keys = sorted(buffer.keys())
-                        # Keep the most recent packets
-                        for k in seq_keys[:-buffer_size]:
-                            buffer.pop(k, None)
-                        
-                        # Update next_seq if we've skipped packets
-                        if seq_keys[-buffer_size] > next_seq:
-                            next_seq = seq_keys[-buffer_size]
-                    
-                except socket.timeout:
-                    # This is expected due to the socket timeout
-                    pass
-                except Exception as e:
-                    if self.running:
-                        print(f"Error in personal mic receiver: {e}")
-                        time.sleep(1.0)
-        finally:
-            sock.close()
-            print("personal mic receiver stopped")
-    
-    def _global_mic_receiver_loop(self) -> None:
-        """Receive USB Audio Device mic audio from remote device."""
-        print(f"Starting USB Audio Device mic receiver on port {AUDIO_PORT_GLOBAL_MIC}")
-        sock = self._create_receiver_socket(AUDIO_PORT_GLOBAL_MIC)
-        
-        buffer = {}  # Store packets by sequence number for reordering
-        next_seq = 0  # Next expected sequence number
-        buffer_size = 10  # Max packets to buffer for reordering
-        
-        try:
-            while self.running:
-                try:
-                    # Receive packet with sequence number
-                    data, addr = sock.recvfrom(65536)
-                    
-                    if len(data) < 4:  # Need at least 4 bytes for sequence number
-                        continue
-                    
-                    # First 4 bytes contain the sequence number
-                    seq_num = struct.unpack(">I", data[:4])[0]
-                    
-                    # Rest of the packet contains the audio data
-                    audio_data = data[4:]
-                    
-                    # Add to buffer
-                    buffer[seq_num] = audio_data
-                    
-                    # Process packets in order
-                    while next_seq in buffer:
-                        # Get the next packet
-                        audio_data = buffer.pop(next_seq)
-                        
-                        # Call callback if registered
-                        if self.on_global_mic_received:
+                        elif mic_type_byte == b'\x01' and self.on_global_mic_received:
                             self.on_global_mic_received(audio_data)
                         
                         next_seq += 1
@@ -607,11 +463,11 @@ class AudioStreamer:
                     pass
                 except Exception as e:
                     if self.running:
-                        print(f"Error in USB Audio Device mic receiver: {e}")
+                        print(f"Error in audio receiver: {e}")
                         time.sleep(1.0)
         finally:
             sock.close()
-            print("USB Audio Device mic receiver stopped")
+            print("Audio receiver stopped")
 
 
 # Test function to run the audio streamer standalone
@@ -630,7 +486,7 @@ def test_audio_streamer():
         print(f"Received personal mic audio: {len(data)} bytes")
     
     def on_global_mic_audio(data):
-        print(f"Received USB Audio Device mic audio: {len(data)} bytes")
+        print(f"Received global mic audio: {len(data)} bytes")
     
     audio_streamer.register_personal_mic_callback(on_personal_mic_audio)
     audio_streamer.register_global_mic_callback(on_global_mic_audio)
@@ -639,18 +495,18 @@ def test_audio_streamer():
     
     try:
         print("\nTesting different pressure states:")
-        print("\n1. Remote pressure, local no pressure")
+        print("\n1. Remote pressure, local no pressure - Streaming GLOBAL mic")
         time.sleep(5)
         
-        print("\n2. Both have pressure")
+        print("\n2. Both have pressure - Streaming PERSONAL mic")
         system_state.update_local_state({"pressure": True})
         time.sleep(5)
         
-        print("\n3. Local pressure, remote no pressure")
+        print("\n3. Local pressure, remote no pressure - Streaming PERSONAL mic")
         system_state.update_remote_state({"pressure": False})
         time.sleep(5)
         
-        print("\n4. Neither has pressure")
+        print("\n4. Neither has pressure - No streaming")
         system_state.update_local_state({"pressure": False})
         time.sleep(5)
         

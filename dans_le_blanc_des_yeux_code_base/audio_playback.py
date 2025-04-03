@@ -2,15 +2,18 @@
 Audio playback module for the Dans le Blanc des Yeux installation.
 Handles playing audio with channel muting based on system state.
 
-Playback Logic:
-1. When remote device has pressure=true and local doesn't:
-   - Play received personal mic with LEFT channel muted
+Fixed playback logic:
+1. When both have pressure:
+   - Play with LEFT channel muted
+   - Send personal mic (TX) to remote
 
-2. When local device has pressure=true and remote doesn't:
-   - Play received global mic with RIGHT channel muted
+2. When remote has pressure and local doesn't:
+   - Play with RIGHT channel muted
+   - Send global mic (USB) to remote
 
-3. When both have pressure=true:
-   - Play received personal mic with LEFT channel muted
+3. When local has pressure and remote doesn't:
+   - Play with LEFT channel muted
+   - Send personal mic (TX) to remote
 
 4. When neither has pressure: No playback
 """
@@ -46,24 +49,14 @@ class AudioPlayback:
         # PyAudio instance
         self.p = pyaudio.PyAudio()
         
-        # Audio output device ID
+        # Audio output device ID - Single output
         self.speaker_id = None
         
-        # Channel muting configuration (will be loaded from config)
-        self.muting_config = {
-            'global_speaker_mute_channel': 'left',    # Which channel to mute for global speaker
-            'personal_speaker_mute_channel': 'right'   # Which channel to mute for personal speaker
-        }
-        
-        # Load settings from config
-        self._load_config()
-        
-        # Audio buffers for received data
-        self.global_speaker_buffer = queue.Queue(maxsize=BUFFER_SIZE)
-        self.personal_speaker_buffer = queue.Queue(maxsize=BUFFER_SIZE)
+        # Single audio buffer for received data
+        self.audio_buffer = queue.Queue(maxsize=BUFFER_SIZE)
         
         # Current playback state
-        self.playback_state = "none"  # "none", "global_speaker_left_muted", "personal_speaker_right_muted"
+        self.playback_state = "none"  # "none", "mute_left", "mute_right"
         
         # Threading
         self.running = False
@@ -76,66 +69,24 @@ class AudioPlayback:
         # Find audio output device
         self._find_audio_devices()
         
-        # Register for audio callbacks
-        self.audio_streamer.register_personal_mic_callback(self._on_global_speaker_audio)
-        self.audio_streamer.register_global_mic_callback(self._on_personal_speaker_audio)
+        # Register for audio callbacks - both go to same buffer now
+        self.audio_streamer.register_personal_mic_callback(self._on_received_audio)
+        self.audio_streamer.register_global_mic_callback(self._on_received_audio)
         
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
         
         print("Audio playback initialized")
     
-    def _load_config(self):
-        """Load audio settings from config.ini"""
-        try:
-            config = configparser.ConfigParser()
-            config.read('config.ini')
-            
-            if 'audio' in config:
-                # Load muting configuration
-                self.muting_config['global_speaker_mute_channel'] = config.get('audio', 'global_speaker_mute_channel', fallback='left')
-                self.muting_config['personal_speaker_mute_channel'] = config.get('audio', 'personal_speaker_mute_channel', fallback='right')
-                
-                print(f"Loaded audio muting configuration from config.ini:")
-                print(f"  global speaker mute channel: {self.muting_config['global_speaker_mute_channel']}")
-                print(f"  personal speaker mute channel: {self.muting_config['personal_speaker_mute_channel']}")
-            else:
-                print("No [audio] section found in config.ini, using default settings")
-                self._add_default_config_settings(config)
-                
-        except Exception as e:
-            print(f"Error loading audio config: {e}")
-            print("Using default muting configuration")
-    
-    def _add_default_config_settings(self, config):
-        """Add default audio settings to config.ini if not present"""
-        try:
-            if 'audio' not in config:
-                config['audio'] = {}
-            
-            # Add muting configuration
-            if 'global_speaker_mute_channel' not in config['audio']:
-                config['audio']['global_speaker_mute_channel'] = self.muting_config['global_speaker_mute_channel']
-            if 'personal_speaker_mute_channel' not in config['audio']:
-                config['audio']['personal_speaker_mute_channel'] = self.muting_config['personal_speaker_mute_channel']
-            
-            # Write to config file
-            with open('config.ini', 'w') as configfile:
-                config.write(configfile)
-                
-            print("Added default audio muting settings to config.ini")
-        except Exception as e:
-            print(f"Error adding default audio settings to config: {e}")
-    
     def _find_audio_devices(self) -> None:
-        """Find the audio output device by name."""
+        """Find the audio output device."""
         # Reset device ID
         self.speaker_id = None
         
         # Get personal mic name from audio_streamer
         personal_mic_name = self.audio_streamer.personal_mic_name
         
-        # Find personal output device
+        # First try to find personal output device
         for i in range(self.p.get_device_count()):
             dev_info = self.p.get_device_info_by_index(i)
             
@@ -210,26 +161,17 @@ class AudioPlayback:
         if not remote_state.get("connected", False):
             self.playback_state = "none"
         
-        # Case 1: Both have pressure - play global speaker with configured channel muted
+        # Case 1: Both have pressure - LEFT channel muted
         elif local_state.get("pressure", False) and remote_state.get("pressure", False):
-            if self.muting_config['global_speaker_mute_channel'] == 'left':
-                self.playback_state = "global_speaker_left_muted"
-            else:
-                self.playback_state = "global_speaker_right_muted"
+            self.playback_state = "mute_left"
         
-        # Case 2: Remote has pressure but local doesn't - play global speaker with configured channel muted
+        # Case 2: Remote has pressure but local doesn't - RIGHT channel muted
         elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
-            if self.muting_config['global_speaker_mute_channel'] == 'left':
-                self.playback_state = "global_speaker_left_muted"
-            else:
-                self.playback_state = "global_speaker_right_muted"
+            self.playback_state = "mute_right"
         
-        # Case 3: Local has pressure but remote doesn't - play personal speaker with configured channel muted
+        # Case 3: Local has pressure but remote doesn't - LEFT channel muted
         elif local_state.get("pressure", False) and not remote_state.get("pressure", False):
-            if self.muting_config['personal_speaker_mute_channel'] == 'left':
-                self.playback_state = "personal_speaker_left_muted"
-            else:
-                self.playback_state = "personal_speaker_right_muted"
+            self.playback_state = "mute_left"
         
         # Case 4: No pressure on either - no playback
         else:
@@ -238,59 +180,35 @@ class AudioPlayback:
         if old_state != self.playback_state:
             print(f"Playback state changed from {old_state} to {self.playback_state}")
             
-            # Clear buffers when changing state
-            self._clear_buffers()
+            # Clear buffer when changing state
+            self._clear_buffer()
     
-    def _clear_buffers(self) -> None:
-        """Clear audio buffers."""
+    def _clear_buffer(self) -> None:
+        """Clear audio buffer."""
         with self.lock:
-            # Clear global speaker buffer
-            while not self.global_speaker_buffer.empty():
+            # Clear buffer
+            while not self.audio_buffer.empty():
                 try:
-                    self.global_speaker_buffer.get_nowait()
-                except queue.Empty:
-                    break
-            
-            # Clear personal speaker buffer
-            while not self.personal_speaker_buffer.empty():
-                try:
-                    self.personal_speaker_buffer.get_nowait()
+                    self.audio_buffer.get_nowait()
                 except queue.Empty:
                     break
     
-    def _on_global_speaker_audio(self, data: bytes) -> None:
-        """Handle received personal mic audio."""
+    def _on_received_audio(self, data: bytes) -> None:
+        """Handle received audio from either source."""
         try:
-            # Only buffer if we're playing this audio 
-            if "global_speaker" in self.playback_state:
+            # Only buffer if we're playing audio
+            if self.playback_state != "none":
                 # If buffer is full, remove oldest chunk
-                if self.global_speaker_buffer.full():
+                if self.audio_buffer.full():
                     try:
-                        self.global_speaker_buffer.get_nowait()
+                        self.audio_buffer.get_nowait()
                     except queue.Empty:
                         pass
                 
                 # Add new data to buffer
-                self.global_speaker_buffer.put_nowait(data)
+                self.audio_buffer.put_nowait(data)
         except Exception as e:
-            print(f"Error handling personal mic audio: {e}")
-    
-    def _on_personal_speaker_audio(self, data: bytes) -> None:
-        """Handle received USB Audio Device mic audio."""
-        try:
-            # Only buffer if we're playing this audio
-            if "personal_speaker" in self.playback_state:
-                # If buffer is full, remove oldest chunk
-                if self.personal_speaker_buffer.full():
-                    try:
-                        self.personal_speaker_buffer.get_nowait()
-                    except queue.Empty:
-                        pass
-                
-                # Add new data to buffer
-                self.personal_speaker_buffer.put_nowait(data)
-        except Exception as e:
-            print(f"Error handling USB Audio Device mic audio: {e}")
+            print(f"Error handling received audio: {e}")
     
     def _apply_channel_muting(self, audio_data: bytes, mute_left: bool = False, mute_right: bool = False) -> bytes:
         """
@@ -344,28 +262,16 @@ class AudioPlayback:
         output_data = np.zeros(frame_count * CHANNELS, dtype=np.int16).tobytes()
         
         try:
-            if state == "global_speaker_left_muted":
-                # Play global speaker with LEFT channel muted
-                if not self.global_speaker_buffer.empty():
-                    data = self.global_speaker_buffer.get_nowait()
+            if state == "mute_left":
+                # Play with LEFT channel muted
+                if not self.audio_buffer.empty():
+                    data = self.audio_buffer.get_nowait()
                     output_data = self._apply_channel_muting(data, mute_left=True, mute_right=False)
             
-            elif state == "global_speaker_right_muted":
-                # Play global speaker with RIGHT channel muted
-                if not self.global_speaker_buffer.empty():
-                    data = self.global_speaker_buffer.get_nowait()
-                    output_data = self._apply_channel_muting(data, mute_left=False, mute_right=True)
-                
-            elif state == "personal_speaker_left_muted":
-                # Play personal speaker with LEFT channel muted
-                if not self.personal_speaker_buffer.empty():
-                    data = self.personal_speaker_buffer.get_nowait()
-                    output_data = self._apply_channel_muting(data, mute_left=True, mute_right=False)
-                
-            elif state == "personal_speaker_right_muted":
-                # Play personal speaker with RIGHT channel muted
-                if not self.personal_speaker_buffer.empty():
-                    data = self.personal_speaker_buffer.get_nowait()
+            elif state == "mute_right":
+                # Play with RIGHT channel muted
+                if not self.audio_buffer.empty():
+                    data = self.audio_buffer.get_nowait()
                     output_data = self._apply_channel_muting(data, mute_left=False, mute_right=True)
                 
             elif state == "none":
@@ -438,14 +344,14 @@ def test_audio_playback():
     
     try:
         print("\nTesting different pressure states:")
-        print("\n1. Remote pressure, local no pressure - global mic LEFT muted")
+        print("\n1. Remote pressure, local no pressure - RIGHT channel muted")
         time.sleep(5)
         
-        print("\n2. Both have pressure - global mic LEFT muted")
+        print("\n2. Both have pressure - LEFT channel muted")
         system_state.update_local_state({"pressure": True})
         time.sleep(5)
         
-        print("\n3. Local pressure, remote no pressure - personal mic RIGHT muted")
+        print("\n3. Local pressure, remote no pressure - LEFT channel muted")
         system_state.update_remote_state({"pressure": False})
         time.sleep(5)
         
