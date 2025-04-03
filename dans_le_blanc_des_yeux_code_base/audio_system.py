@@ -1,65 +1,84 @@
 """
-Audio system for Dans le Blanc des Yeux installation using VLC subprocesses.
-Handles audio streaming between devices and channel muting based on pressure states.
+Audio system for Dans le Blanc des Yeux installation.
+Uses VLC for reliable audio streaming and PyAudio for device management.
 """
 
-import subprocess
 import time
 import threading
+import subprocess
 import socket
+import numpy as np
+import pyaudio
+import configparser
 import os
 import signal
-import configparser
+import atexit
 from typing import Dict, Any, Optional, List, Tuple
+from pydub import AudioSegment
 
 from system_state import system_state
 
-# Default streaming parameters
-HTTP_STREAM_PORT = 8888
-HTTP_AUDIO_PATH = "audio.mp3"
-MP3_BITRATE = 64  # in kbps
-AUDIO_VOLUME = 80  # Default volume level (0-100)
-
 class AudioSystem:
-    """Handles audio capture, playback, and streaming using VLC subprocesses."""
+    """Handles audio capture, playback, and streaming between devices using VLC."""
     
     def __init__(self, remote_ip: str):
         self.remote_ip = remote_ip
         
-        # Streaming URLs
-        self.local_stream_url = f"http://0.0.0.0:{HTTP_STREAM_PORT}/{HTTP_AUDIO_PATH}"
-        self.remote_stream_url = f"http://{remote_ip}:{HTTP_STREAM_PORT}/{HTTP_AUDIO_PATH}"
+        # PyAudio instance
+        self.p = None
         
-        # Audio device configuration
-        self.personal_mic_name = "TX 96Khz"
-        self.global_mic_name = "USB Audio Device"
-        self.personal_mic_device = None
-        self.global_mic_device = None
-        self.output_device = None
+        # Audio devices
+        self.personal_mic_id = None
+        self.personal_mic_name = None
+        self.personal_mic_channels = 1  # TX mic is mono
+        
+        self.global_mic_id = None
+        self.global_mic_name = None
+        self.global_mic_channels = 1  # Default to mono, will detect
+        
+        self.output_device_id = None
+        self.output_device_name = None
         
         # Channel muting configuration
-        self.global_speaker_mute_channel = "right"
-        self.personal_speaker_mute_channel = "left"
+        self.global_speaker_mute_channel = None  # 'left' or 'right'
+        self.personal_speaker_mute_channel = None  # 'left' or 'right'
         
-        # Process tracking
-        self.streaming_process = None
-        self.playback_process = None
+        # Output stream
+        self.output_stream = None
         
-        # State tracking
-        self.streaming_mic = None  # 'personal', 'global', or None
+        # Streaming subprocesses
+        self.personal_mic_stream_process = None
+        self.global_mic_stream_process = None
+        self.receive_stream_process = None
+        
+        # Streaming control
+        self.streaming_personal_mic = False
+        self.streaming_global_mic = False
         self.playing_audio = False
+        self.stream_port = 8888
+        self.receive_port = 8889
+        
+        # Muted channels
         self.muted_channels = {"left": False, "right": False}
         
         # Thread control
         self.running = False
+        self.threads = []
         self.lock = threading.Lock()
-        self.monitor_thread = None
+        self.is_shutting_down = False
+        
+        # HTTP streaming URLs
+        self.outgoing_stream_url = f"http://{self.remote_ip}:{self.stream_port}/audio.mp3"
+        self.incoming_stream_url = f"http://0.0.0.0:{self.receive_port}/audio.mp3"
         
         # Load configuration
         self._load_config()
         
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
+        
+        # Register cleanup handler
+        atexit.register(self.stop)
         
         print(f"Audio system initialized with remote IP: {remote_ip}")
     
@@ -74,113 +93,118 @@ class AudioSystem:
                 self.global_speaker_mute_channel = config.get('audio', 'global_speaker_mute_channel', fallback='right')
                 self.personal_speaker_mute_channel = config.get('audio', 'personal_speaker_mute_channel', fallback='left')
                 
-                # Load device names
+                # Device names from config
                 self.personal_mic_name = config.get('audio', 'personal_mic_name', fallback='TX 96Khz')
                 self.global_mic_name = config.get('audio', 'global_mic_name', fallback='USB Audio Device')
                 
-                print(f"Audio configuration loaded:")
+                print(f"Using audio configuration:")
                 print(f"  Global speaker mute channel: {self.global_speaker_mute_channel}")
                 print(f"  Personal speaker mute channel: {self.personal_speaker_mute_channel}")
                 print(f"  Personal mic name: {self.personal_mic_name}")
                 print(f"  Global mic name: {self.global_mic_name}")
             else:
                 print("No [audio] section found in config.ini, using default settings")
+                # Use default names for device detection
+                self.personal_mic_name = "TX 96Khz"
+                self.global_mic_name = "USB Audio Device"
         except Exception as e:
             print(f"Error loading audio config: {e}")
             print("Using default audio settings")
+            self.personal_mic_name = "TX 96Khz"
+            self.global_mic_name = "USB Audio Device"
     
     def _find_audio_devices(self):
-        """Find ALSA device IDs for audio devices based on names."""
+        """Find audio device IDs based on device names from config."""
         try:
-            # Get list of ALSA devices using arecord command
-            arecord_output = subprocess.check_output(['arecord', '-l'], text=True)
-            aplay_output = subprocess.check_output(['aplay', '-l'], text=True)
+            # Print all available devices for debugging
+            print("\nAvailable audio devices:")
+            for i in range(self.p.get_device_count()):
+                dev_info = self.p.get_device_info_by_index(i)
+                print(f"  {i}: {dev_info['name']} (in: {dev_info['maxInputChannels']}, out: {dev_info['maxOutputChannels']})")
             
-            print("\nAvailable audio input devices:")
-            print(arecord_output)
+            # Find personal mic
+            for i in range(self.p.get_device_count()):
+                dev_info = self.p.get_device_info_by_index(i)
+                if self.personal_mic_name.lower() in dev_info['name'].lower() and dev_info['maxInputChannels'] > 0:
+                    self.personal_mic_id = i
+                    self.personal_mic_channels = int(dev_info['maxInputChannels'])
+                    print(f"Found personal mic: {dev_info['name']} (ID: {i}, Channels: {self.personal_mic_channels})")
+                    break
             
-            print("\nAvailable audio output devices:")
-            print(aplay_output)
+            # Find global mic
+            for i in range(self.p.get_device_count()):
+                dev_info = self.p.get_device_info_by_index(i)
+                if self.global_mic_name.lower() in dev_info['name'].lower() and dev_info['maxInputChannels'] > 0:
+                    self.global_mic_id = i
+                    self.global_mic_channels = int(dev_info['maxInputChannels'])
+                    print(f"Found global mic: {dev_info['name']} (ID: {i}, Channels: {self.global_mic_channels})")
+                    break
             
-            # Find personal mic (TX 96Khz)
-            self.personal_mic_device = self._find_alsa_device(arecord_output, self.personal_mic_name)
-            if self.personal_mic_device:
-                print(f"Found personal mic: {self.personal_mic_name} -> {self.personal_mic_device}")
-            else:
+            # Find output device (use default output)
+            default_output = self.p.get_default_output_device_info()
+            self.output_device_id = default_output['index']
+            self.output_device_name = default_output['name']
+            print(f"Using default output device: {self.output_device_name} (ID: {self.output_device_id})")
+            
+            # Check if we found all needed devices
+            if self.personal_mic_id is None:
                 print(f"Warning: Could not find personal mic with name '{self.personal_mic_name}'")
-                print("Falling back to default input device")
-                self.personal_mic_device = "default"
+                # Try to use default input device
+                default_input = self.p.get_default_input_device_info()
+                print(f"Using default input device for personal mic: {default_input['name']} (ID: {default_input['index']})")
+                self.personal_mic_id = default_input['index']
+                self.personal_mic_name = default_input['name']
             
-            # Find global mic (USB Audio Device)
-            self.global_mic_device = self._find_alsa_device(arecord_output, self.global_mic_name)
-            if self.global_mic_device:
-                print(f"Found global mic: {self.global_mic_name} -> {self.global_mic_device}")
-            else:
+            if self.global_mic_id is None:
                 print(f"Warning: Could not find global mic with name '{self.global_mic_name}'")
-                if self.personal_mic_device and self.personal_mic_device != "default":
-                    print(f"Using personal mic device for global mic as well")
-                    self.global_mic_device = self.personal_mic_device
+                if self.personal_mic_id is not None:
+                    print(f"Using personal mic for global mic as well")
+                    self.global_mic_id = self.personal_mic_id
+                    self.global_mic_name = self.personal_mic_name
+                    self.global_mic_channels = self.personal_mic_channels
                 else:
-                    print("Falling back to default input device")
-                    self.global_mic_device = "default"
-            
-            # Find output device
-            self.output_device = "default"  # Default ALSA output device
-            print(f"Using default ALSA output device")
+                    # Try to use default input device
+                    default_input = self.p.get_default_input_device_info()
+                    print(f"Using default input device for global mic: {default_input['name']} (ID: {default_input['index']})")
+                    self.global_mic_id = default_input['index']
+                    self.global_mic_name = default_input['name']
+                    self.global_mic_channels = int(default_input['maxInputChannels'])
             
             return True
         except Exception as e:
             print(f"Error finding audio devices: {e}")
-            print("Using default audio devices")
-            self.personal_mic_device = "default"
-            self.global_mic_device = "default"
-            self.output_device = "default"
+            print("Audio functionality may be limited")
             return False
-    
-    def _find_alsa_device(self, arecord_output, device_name):
-        """Parse arecord -l output to find ALSA device by name."""
-        device_name = device_name.lower()
-        lines = arecord_output.split('\n')
-        
-        for line in lines:
-            if 'card' in line.lower() and device_name in line.lower():
-                # Extract card and device numbers
-                try:
-                    card_match = line.split('card ')[1].split(':')[0].strip()
-                    device_match = line.split('device ')[1].split(':')[0].strip()
-                    return f"hw:{card_match},{device_match}"
-                except:
-                    continue
-        
-        return None
     
     def start(self) -> bool:
         """Start the audio system."""
         print("Starting audio system...")
         
         try:
-            # Check if VLC is installed
-            try:
-                subprocess.check_output(['cvlc', '--version'], stderr=subprocess.STDOUT)
-                print("Found VLC command-line tool")
-            except (subprocess.SubprocessError, FileNotFoundError):
-                print("Error: VLC is not installed or not in PATH")
-                print("Please install VLC: sudo apt-get install vlc")
-                return False
+            # Initialize PyAudio in the main thread
+            self.p = pyaudio.PyAudio()
             
             # Find audio devices
-            self._find_audio_devices()
+            if not self._find_audio_devices():
+                print("Failed to find audio devices")
+                return False
             
-            # Start monitoring thread
+            # Initialize audio output stream for playback
+            self._init_output_stream()
+            
             self.running = True
-            self.monitor_thread = threading.Thread(target=self._monitor_loop)
-            self.monitor_thread.daemon = True
-            self.monitor_thread.start()
+            self.is_shutting_down = False
+            
+            # Start audio playback thread
+            playback_thread = threading.Thread(target=self._audio_playback_loop)
+            playback_thread.daemon = True
+            playback_thread.start()
+            self.threads.append(playback_thread)
             
             # Check initial state to see if we need to start streaming right away
             self._update_audio_based_on_state()
             
-            print("Audio system started successfully")
+            print("Audio system started")
             return True
         except Exception as e:
             print(f"Error starting audio system: {e}")
@@ -189,46 +213,60 @@ class AudioSystem:
     
     def stop(self) -> None:
         """Stop the audio system and release resources."""
+        if self.is_shutting_down:
+            return
+            
         print("Stopping audio system...")
-        
-        # Signal monitoring thread to stop
+        self.is_shutting_down = True
         self.running = False
         
-        # Wait for thread to finish
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=2.0)
+        # Stop all streaming
+        self._stop_all_audio()
         
-        # Stop all processes
-        self._stop_streaming()
-        self._stop_playback()
+        # Kill any VLC processes
+        self._kill_vlc_processes()
+        
+        # Wait for threads to finish
+        for thread in self.threads:
+            thread.join(timeout=1.0)
+        
+        # Close output stream
+        if self.output_stream:
+            try:
+                if self.output_stream.is_active():
+                    self.output_stream.stop_stream()
+                self.output_stream.close()
+                self.output_stream = None
+            except Exception as e:
+                print(f"Error closing output stream: {e}")
+        
+        # Terminate PyAudio
+        if self.p:
+            try:
+                self.p.terminate()
+                self.p = None
+            except Exception as e:
+                print(f"Error terminating PyAudio: {e}")
         
         print("Audio system stopped")
     
-    def _monitor_loop(self) -> None:
-        """Monitor VLC processes and restart if necessary."""
-        print("Audio monitoring thread started")
-        
-        while self.running:
-            try:
-                # Check if streaming process is running when it should be
-                if self.streaming_mic and self.streaming_process:
-                    # Check if process has terminated unexpectedly
-                    if self.streaming_process.poll() is not None:
-                        print(f"Streaming process terminated unexpectedly, restarting...")
-                        self._start_streaming(self.streaming_mic)
-                
-                # Check if playback process is running when it should be
-                if self.playing_audio and self.playback_process:
-                    # Check if process has terminated unexpectedly
-                    if self.playback_process.poll() is not None:
-                        print(f"Playback process terminated unexpectedly, restarting...")
-                        self._start_playback()
-                
-                # Sleep before next check
-                time.sleep(5)
-            except Exception as e:
-                print(f"Error in monitoring thread: {e}")
-                time.sleep(10)
+    def _init_output_stream(self) -> bool:
+        """Initialize the audio output stream."""
+        try:
+            # Start output stream
+            self.output_stream = self.p.open(
+                format=pyaudio.paInt16,
+                channels=2,  # Always stereo for output
+                rate=44100,
+                output=True,
+                output_device_index=self.output_device_id,
+                frames_per_buffer=1024
+            )
+            print(f"Started output stream (ID: {self.output_device_id})")
+            return True
+        except Exception as e:
+            print(f"Error starting output stream: {e}")
+            return False
     
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
@@ -249,10 +287,11 @@ class AudioSystem:
         if local_state.get("pressure", False) and remote_state.get("pressure", False):
             # Play with LEFT channel muted
             self._set_muted_channels(left=True, right=False)
+            self.playing_audio = True
             
             # Stream personal mic to remote
-            self._start_streaming("personal")
-            self._start_playback()
+            self._start_personal_mic_stream()
+            self._stop_global_mic_stream()
             
             # Update system state
             system_state.update_local_state({"audio": {
@@ -260,16 +299,16 @@ class AudioSystem:
                 "muted_channels": ["left"],
                 "streaming_mic": "personal"
             }})
-            print("Audio mode: Both have pressure - LEFT muted, streaming personal mic")
         
         # Case 2: Remote has pressure and local doesn't
         elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
             # Play with RIGHT channel muted
             self._set_muted_channels(left=False, right=True)
+            self.playing_audio = True
             
             # Stream global mic to remote
-            self._start_streaming("global")
-            self._start_playback()
+            self._stop_personal_mic_stream()
+            self._start_global_mic_stream()
             
             # Update system state
             system_state.update_local_state({"audio": {
@@ -277,16 +316,16 @@ class AudioSystem:
                 "muted_channels": ["right"],
                 "streaming_mic": "global"
             }})
-            print("Audio mode: Remote pressure only - RIGHT muted, streaming global mic")
         
         # Case 3: Local has pressure and remote doesn't
         elif local_state.get("pressure", False) and not remote_state.get("pressure", False):
             # Play with LEFT channel muted
             self._set_muted_channels(left=True, right=False)
+            self.playing_audio = True
             
             # Stream personal mic to remote
-            self._start_streaming("personal")
-            self._start_playback()
+            self._start_personal_mic_stream()
+            self._stop_global_mic_stream()
             
             # Update system state
             system_state.update_local_state({"audio": {
@@ -294,18 +333,26 @@ class AudioSystem:
                 "muted_channels": ["left"],
                 "streaming_mic": "personal"
             }})
-            print("Audio mode: Local pressure only - LEFT muted, streaming personal mic")
         
         # Case 4: No pressure on either device
         else:
             # No playback
             self._stop_all_audio()
-            print("Audio mode: No pressure - audio stopped")
     
     def _stop_all_audio(self) -> None:
         """Stop all audio streaming and playback."""
-        self._stop_streaming()
-        self._stop_playback()
+        # Stop streaming
+        self._stop_personal_mic_stream()
+        self._stop_global_mic_stream()
+        
+        # Stop stream receiving
+        self._stop_receive_stream()
+        
+        # Stop playback
+        self.playing_audio = False
+        
+        # Mute all channels
+        self._set_muted_channels(left=True, right=True)
         
         # Update system state
         system_state.update_local_state({"audio": {
@@ -317,151 +364,280 @@ class AudioSystem:
     def _set_muted_channels(self, left: bool, right: bool) -> None:
         """Set the muting state for left and right channels."""
         with self.lock:
-            # Store current muting state
             self.muted_channels["left"] = left
             self.muted_channels["right"] = right
-            
-            # If we're already playing audio, apply the changes
-            if self.playing_audio:
-                self._restart_playback_with_muting()
+            print(f"Audio channels muting: Left={left}, Right={right}")
     
-    def _start_streaming(self, mic_type: str) -> bool:
-        """Start streaming audio from specified microphone.
-        
-        Args:
-            mic_type: Either 'personal' or 'global'
-        
-        Returns:
-            True if streaming started successfully, False otherwise
-        """
-        # First, stop any existing streaming
-        self._stop_streaming()
+    def _start_personal_mic_stream(self) -> None:
+        """Start streaming personal mic using VLC."""
+        if self.streaming_personal_mic:
+            return
+            
+        if self.personal_mic_id is None:
+            print("Cannot stream personal mic: No device found")
+            return
         
         try:
-            # Select device based on mic type
-            device = self.personal_mic_device if mic_type == "personal" else self.global_mic_device
+            # Stop any existing process
+            if self.personal_mic_stream_process:
+                self._stop_personal_mic_stream()
             
-            # Build VLC command
+            # Get the ALSA device name
+            hw_device = f"hw:{self.personal_mic_id},0"
+            print(f"Starting personal mic stream from {hw_device} to {self.outgoing_stream_url}")
+            
+            # Start VLC process for streaming
             cmd = [
                 'cvlc',
-                f'alsa://{device}',
-                '--sout', f'#transcode{{acodec=mp3,ab={MP3_BITRATE},channels=2}}:http{{mux=mp3,dst=0.0.0.0:{HTTP_STREAM_PORT}/{HTTP_AUDIO_PATH}}}',
-                '--no-sout-all',
-                '--sout-keep',
-                '--quiet'
+                f'alsa://{hw_device}',
+                '--sout', 
+                f'#transcode{{acodec=mp3,ab=64,channels=1}}:http{{mux=mp3,dst={self.remote_ip}:{self.stream_port}/audio.mp3}}'
             ]
             
-            print(f"Starting {mic_type} mic streaming: {' '.join(cmd)}")
-            
-            # Start VLC process
-            self.streaming_process = subprocess.Popen(
+            self.personal_mic_stream_process = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
             
-            # Update state
-            self.streaming_mic = mic_type
+            # Also start receiving stream from remote
+            self._start_receive_stream()
             
-            # Wait a moment for streaming to start
-            time.sleep(1)
-            
-            return True
+            self.streaming_personal_mic = True
+            print("Personal mic streaming started")
         except Exception as e:
-            print(f"Error starting audio streaming: {e}")
-            self.streaming_mic = None
-            return False
+            print(f"Error starting personal mic stream: {e}")
     
-    def _stop_streaming(self) -> None:
-        """Stop any active audio streaming."""
-        if self.streaming_process:
-            try:
-                # Send SIGTERM to VLC process
-                self.streaming_process.terminate()
-                
-                # Wait for process to terminate (with timeout)
-                try:
-                    self.streaming_process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    # If it doesn't terminate, force kill
-                    print("Streaming process didn't terminate, force killing...")
-                    self.streaming_process.kill()
-            except Exception as e:
-                print(f"Error stopping streaming process: {e}")
+    def _stop_personal_mic_stream(self) -> None:
+        """Stop streaming personal mic."""
+        if not self.streaming_personal_mic:
+            return
             
-            self.streaming_process = None
-            self.streaming_mic = None
+        if self.personal_mic_stream_process:
+            try:
+                self.personal_mic_stream_process.terminate()
+                self.personal_mic_stream_process.wait(timeout=2)
+            except Exception as e:
+                print(f"Error stopping personal mic stream: {e}")
+                # Force kill if needed
+                try:
+                    self.personal_mic_stream_process.kill()
+                except:
+                    pass
+            self.personal_mic_stream_process = None
+        
+        self.streaming_personal_mic = False
+        print("Personal mic streaming stopped")
     
-    def _start_playback(self) -> bool:
-        """Start playing audio from remote stream with channel muting."""
-        # First, stop any existing playback
-        self._stop_playback()
+    def _start_global_mic_stream(self) -> None:
+        """Start streaming global mic using VLC."""
+        if self.streaming_global_mic:
+            return
+            
+        if self.global_mic_id is None:
+            print("Cannot stream global mic: No device found")
+            return
         
         try:
-            # Build VLC command with appropriate channel muting
-            vlc_args = [
+            # Stop any existing process
+            if self.global_mic_stream_process:
+                self._stop_global_mic_stream()
+            
+            # Get the ALSA device name
+            hw_device = f"hw:{self.global_mic_id},0"
+            print(f"Starting global mic stream from {hw_device} to {self.outgoing_stream_url}")
+            
+            # Start VLC process for streaming
+            cmd = [
                 'cvlc',
-                self.remote_stream_url,
-                '--quiet',
-                '--no-video'
+                f'alsa://{hw_device}',
+                '--sout', 
+                f'#transcode{{acodec=mp3,ab=64,channels=1}}:http{{mux=mp3,dst={self.remote_ip}:{self.stream_port}/audio.mp3}}'
             ]
             
-            # Apply channel muting if needed
-            if self.muted_channels["left"] and not self.muted_channels["right"]:
-                # Mute left channel only
-                vlc_args.extend(['--audio-filter', 'channelmixer', '--channelmixer-left=0', '--channelmixer-right=1'])
-            elif self.muted_channels["right"] and not self.muted_channels["left"]:
-                # Mute right channel only
-                vlc_args.extend(['--audio-filter', 'channelmixer', '--channelmixer-left=1', '--channelmixer-right=0'])
-            elif self.muted_channels["left"] and self.muted_channels["right"]:
-                # Mute both channels (silent)
-                vlc_args.extend(['--volume', '0'])
-            else:
-                # No muting, set normal volume
-                vlc_args.extend(['--volume', str(AUDIO_VOLUME)])
-            
-            print(f"Starting audio playback: {' '.join(vlc_args)}")
-            
-            # Start VLC process
-            self.playback_process = subprocess.Popen(
-                vlc_args, 
+            self.global_mic_stream_process = subprocess.Popen(
+                cmd, 
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
             
-            # Update state
-            self.playing_audio = True
+            # Also start receiving stream from remote
+            self._start_receive_stream()
             
-            return True
+            self.streaming_global_mic = True
+            print("Global mic streaming started")
         except Exception as e:
-            print(f"Error starting audio playback: {e}")
-            self.playing_audio = False
-            return False
+            print(f"Error starting global mic stream: {e}")
     
-    def _restart_playback_with_muting(self) -> None:
-        """Restart playback with current muting settings."""
-        if self.playing_audio:
-            self._start_playback()
-    
-    def _stop_playback(self) -> None:
-        """Stop audio playback."""
-        if self.playback_process:
-            try:
-                # Send SIGTERM to VLC process
-                self.playback_process.terminate()
-                
-                # Wait for process to terminate (with timeout)
-                try:
-                    self.playback_process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    # If it doesn't terminate, force kill
-                    print("Playback process didn't terminate, force killing...")
-                    self.playback_process.kill()
-            except Exception as e:
-                print(f"Error stopping playback process: {e}")
+    def _stop_global_mic_stream(self) -> None:
+        """Stop streaming global mic."""
+        if not self.streaming_global_mic:
+            return
             
-            self.playback_process = None
-            self.playing_audio = False
+        if self.global_mic_stream_process:
+            try:
+                self.global_mic_stream_process.terminate()
+                self.global_mic_stream_process.wait(timeout=2)
+            except Exception as e:
+                print(f"Error stopping global mic stream: {e}")
+                # Force kill if needed
+                try:
+                    self.global_mic_stream_process.kill()
+                except:
+                    pass
+            self.global_mic_stream_process = None
+        
+        self.streaming_global_mic = False
+        print("Global mic streaming stopped")
+    
+    def _start_receive_stream(self) -> None:
+        """Start receiving audio stream from remote device."""
+        try:
+            # Stop any existing receive process
+            self._stop_receive_stream()
+            
+            # We'll start listening on our receive port for incoming audio
+            print(f"Starting to receive stream from {self.remote_ip}")
+            
+            # Start VLC process for receiving and playing
+            # The fifo file will be read by our audio playback thread
+            fifo_path = "/tmp/dans_le_blanc_audio_fifo"
+            
+            # Create FIFO if it doesn't exist
+            if not os.path.exists(fifo_path):
+                try:
+                    os.mkfifo(fifo_path)
+                except Exception as e:
+                    print(f"Error creating FIFO: {e}")
+                    return
+            
+            # Start VLC to receive audio and write to FIFO
+            cmd = [
+                'cvlc',
+                f'http://{self.remote_ip}:{self.stream_port}/audio.mp3',
+                '--sout',
+                f'#std{{access=file,mux=raw,dst={fifo_path}}}'
+            ]
+            
+            self.receive_stream_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            print("Audio receive process started")
+        except Exception as e:
+            print(f"Error starting receive stream: {e}")
+    
+    def _stop_receive_stream(self) -> None:
+        """Stop receiving audio stream."""
+        if self.receive_stream_process:
+            try:
+                self.receive_stream_process.terminate()
+                self.receive_stream_process.wait(timeout=2)
+            except Exception as e:
+                print(f"Error stopping receive stream: {e}")
+                # Force kill if needed
+                try:
+                    self.receive_stream_process.kill()
+                except:
+                    pass
+            self.receive_stream_process = None
+            print("Audio receive process stopped")
+    
+    def _kill_vlc_processes(self) -> None:
+        """Kill all VLC processes started by this system."""
+        processes = [
+            self.personal_mic_stream_process,
+            self.global_mic_stream_process,
+            self.receive_stream_process
+        ]
+        
+        for process in processes:
+            if process:
+                try:
+                    process.terminate()
+                    process.wait(timeout=1)
+                except:
+                    try:
+                        process.kill()
+                    except:
+                        pass
+    
+    def _audio_playback_loop(self) -> None:
+        """Play received audio with channel muting."""
+        print("Starting audio playback loop")
+        fifo_path = "/tmp/dans_le_blanc_audio_fifo"
+        
+        # Make sure FIFO exists
+        if not os.path.exists(fifo_path):
+            try:
+                os.mkfifo(fifo_path)
+            except Exception as e:
+                print(f"Error creating FIFO: {e}")
+                return
+        
+        # Buffer for audio processing
+        buffer_size = 1024 * 2  # 1024 samples * 2 bytes per sample (16-bit)
+        
+        try:
+            while self.running and not self.is_shutting_down:
+                try:
+                    if not self.playing_audio or self.output_stream is None:
+                        time.sleep(0.1)
+                        continue
+                    
+                    # Try to open the FIFO for reading
+                    # We use non-blocking open to avoid hanging if there's no data
+                    fd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+                    try:
+                        data = os.read(fd, buffer_size)
+                        if data:
+                            # Convert bytes to numpy array (assuming stereo int16 format)
+                            audio_data = np.frombuffer(data, dtype=np.int16)
+                            
+                            # Handle odd number of samples
+                            if len(audio_data) % 2 != 0:
+                                audio_data = audio_data[:-1]
+                            
+                            # Reshape to stereo (2 channels)
+                            if len(audio_data) > 0:
+                                try:
+                                    audio_data = audio_data.reshape(-1, 2)
+                                    
+                                    # Apply channel muting
+                                    muted_data = audio_data.copy()
+                                    
+                                    # Mute left channel if needed
+                                    if self.muted_channels["left"]:
+                                        muted_data[:, 0] = 0
+                                    
+                                    # Mute right channel if needed
+                                    if self.muted_channels["right"]:
+                                        muted_data[:, 1] = 0
+                                    
+                                    # Convert back to bytes
+                                    output_data = muted_data.tobytes()
+                                    
+                                    # Play audio
+                                    if self.output_stream and self.output_stream.is_active():
+                                        self.output_stream.write(output_data)
+                                except Exception as reshape_error:
+                                    print(f"Error processing audio data: {reshape_error}")
+                    except BlockingIOError:
+                        # No data available, sleep briefly
+                        time.sleep(0.01)
+                    finally:
+                        # Close the file descriptor
+                        os.close(fd)
+                except Exception as e:
+                    if self.running and not self.is_shutting_down:
+                        print(f"Error in audio playback: {e}")
+                    time.sleep(0.1)
+        except Exception as e:
+            print(f"Error in audio playback loop: {e}")
+        finally:
+            print("Audio playback thread exiting...")
 
 # Test function to run the audio system standalone
 def test_audio_system():
