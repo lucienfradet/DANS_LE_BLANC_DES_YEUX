@@ -380,10 +380,16 @@ class AudioStreamer:
         stream = None
         
         try:
-            # Create PyAudio stream for personal mic
+            # Get device info to check actual channel count
+            device_info = self.p.get_device_info_by_index(self.personal_mic_id)
+            input_channels = int(device_info.get('maxInputChannels', 1))
+            
+            print(f"Personal mic has {input_channels} input channels")
+            
+            # Create PyAudio stream for personal mic with correct channel count
             stream = self.p.open(
                 format=FORMAT,
-                channels=CHANNELS,
+                channels=input_channels,  # Use actual channel count from device
                 rate=RATE,
                 input=True,
                 frames_per_buffer=CHUNK_SIZE,
@@ -396,6 +402,13 @@ class AudioStreamer:
                 try:
                     # Read audio data
                     data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                    
+                    # If input is mono but we need stereo for output, convert mono to stereo
+                    if input_channels == 1 and CHANNELS == 2:
+                        # Convert mono to stereo by duplicating each sample
+                        mono_data = np.frombuffer(data, dtype=np.int16)
+                        stereo_data = np.repeat(mono_data, 2)
+                        data = stereo_data.tobytes()
                     
                     # Create packet with sequence number
                     packet = struct.pack(">I", seq_num) + data
@@ -415,7 +428,7 @@ class AudioStreamer:
                 stream.close()
             sock.close()
             print("personal mic sender stopped")
-    
+
     def _global_mic_sender_loop(self) -> None:
         """Send USB Audio Device mic audio to remote device."""
         if self.global_mic_id is None:
@@ -429,10 +442,16 @@ class AudioStreamer:
         stream = None
         
         try:
-            # Create PyAudio stream for USB Audio Device mic
+            # Get device info to check actual channel count
+            device_info = self.p.get_device_info_by_index(self.global_mic_id)
+            input_channels = int(device_info.get('maxInputChannels', 1))
+            
+            print(f"Global mic has {input_channels} input channels")
+            
+            # Create PyAudio stream for USB Audio Device mic with correct channel count
             stream = self.p.open(
                 format=FORMAT,
-                channels=CHANNELS,
+                channels=input_channels,  # Use actual channel count from device
                 rate=RATE,
                 input=True,
                 frames_per_buffer=CHUNK_SIZE,
@@ -445,6 +464,13 @@ class AudioStreamer:
                 try:
                     # Read audio data
                     data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                    
+                    # If input is mono but we need stereo for output, convert mono to stereo
+                    if input_channels == 1 and CHANNELS == 2:
+                        # Convert mono to stereo by duplicating each sample
+                        mono_data = np.frombuffer(data, dtype=np.int16)
+                        stereo_data = np.repeat(mono_data, 2)
+                        data = stereo_data.tobytes()
                     
                     # Create packet with sequence number
                     packet = struct.pack(">I", seq_num) + data
