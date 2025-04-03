@@ -52,8 +52,9 @@ apt-get install -y \
     gir1.2-gstreamer-1.0
 
 # Fix permissions for camera access
-echo "Setting up camera permissions..."
+echo "Setting up camera and audio permissions..."
 usermod -a -G video $SUDO_USER
+usermod -a -G audio $SUDO_USER
 
 # Copy the new camera_utils.py file
 echo "Installing the new camera utility files..."

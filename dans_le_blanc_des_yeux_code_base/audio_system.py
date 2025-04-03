@@ -350,10 +350,16 @@ class AudioSystem:
             self.input_stream = None
         
         try:
-            # Open new input stream
+            # Get device info to check actual channel count
+            device_info = self.pa.get_device_info_by_index(device_id)
+            input_channels = min(1, int(device_info['maxInputChannels']))  # Use 1 channel max for input
+            
+            print(f"Opening input stream for device {device_id} with {input_channels} channel(s)")
+            
+            # Open new input stream with correct channel count
             self.input_stream = self.pa.open(
                 format=self.format,
-                channels=self.channels,
+                channels=input_channels,  # Use detected channel count, not self.channels
                 rate=self.rate,
                 input=True,
                 input_device_index=device_id,
@@ -491,19 +497,32 @@ class AudioSystem:
                 data, addr = self.receiver_socket.recvfrom(self.buffer_size)
                 
                 if data and self.output_stream is not None:
-                    # Convert bytes to numpy array for processing
-                    audio_data = np.frombuffer(data, dtype=np.int16).reshape(-1, self.channels)
-                    
-                    # Apply channel muting based on current state
-                    if self.muted_channel == 'left':
-                        audio_data[:, 0] = 0  # Mute left channel
-                    elif self.muted_channel == 'right':
-                        audio_data[:, 1] = 0  # Mute right channel
-                    elif self.muted_channel == 'both':
-                        audio_data[:, :] = 0  # Mute both channels
-                    
-                    # Write processed audio to output stream
-                    self.output_stream.write(audio_data.tobytes())
+                    # Convert bytes to numpy array
+                    # Try to determine if it's mono or stereo data
+                    try:
+                        samples = len(data) // 2  # 2 bytes per sample for 16-bit audio
+                        if samples % 2 == 0:  # Might be stereo (2 channels)
+                            audio_data = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
+                        else:  # Must be mono (1 channel)
+                            mono_data = np.frombuffer(data, dtype=np.int16)
+                            # Duplicate mono to stereo for output
+                            audio_data = np.column_stack((mono_data, mono_data))
+                            
+                        # Apply channel muting based on current state
+                        if self.muted_channel == 'left':
+                            audio_data[:, 0] = 0  # Mute left channel
+                        elif self.muted_channel == 'right':
+                            audio_data[:, 1] = 0  # Mute right channel
+                        elif self.muted_channel == 'both':
+                            audio_data[:, :] = 0  # Mute both channels
+                        
+                        # Write processed audio to output stream
+                        self.output_stream.write(audio_data.tobytes())
+                        
+                    except Exception as processing_error:
+                        print(f"Error processing audio data: {processing_error}")
+                        # Fall back to raw data
+                        self.output_stream.write(data)
                     
                     # Report stats periodically
                     packet_counter += 1
