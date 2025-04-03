@@ -16,7 +16,7 @@ from system_state import system_state
 # Constants for audio streaming
 CHUNK_SIZE = 1024
 FORMAT = pyaudio.paInt16
-CHANNELS = 2
+OUTPUT_CHANNELS = 2  # Stereo output
 RATE = 44100
 AUDIO_PORT = 5002  # Port for audio streaming
 
@@ -31,7 +31,9 @@ class AudioSystem:
         
         # Audio devices
         self.personal_mic_id = None
+        self.personal_mic_channels = 1  # Default to mono
         self.global_mic_id = None
+        self.global_mic_channels = 1  # Default to mono
         self.output_device_id = None
         
         # Channel muting configuration
@@ -123,7 +125,8 @@ class AudioSystem:
                 dev_info = self.p.get_device_info_by_index(i)
                 if personal_mic_name.lower() in dev_info['name'].lower() and dev_info['maxInputChannels'] > 0:
                     self.personal_mic_id = i
-                    print(f"Found personal mic: {dev_info['name']} (ID: {i})")
+                    self.personal_mic_channels = int(dev_info['maxInputChannels'])
+                    print(f"Found personal mic: {dev_info['name']} (ID: {i}, Channels: {self.personal_mic_channels})")
                     break
             
             # Find global mic
@@ -131,7 +134,8 @@ class AudioSystem:
                 dev_info = self.p.get_device_info_by_index(i)
                 if global_mic_name.lower() in dev_info['name'].lower() and dev_info['maxInputChannels'] > 0:
                     self.global_mic_id = i
-                    print(f"Found global mic: {dev_info['name']} (ID: {i})")
+                    self.global_mic_channels = int(dev_info['maxInputChannels'])
+                    print(f"Found global mic: {dev_info['name']} (ID: {i}, Channels: {self.global_mic_channels})")
                     break
             
             # Find output device (use default output)
@@ -245,7 +249,7 @@ class AudioSystem:
             if self.personal_mic_id is not None:
                 self.personal_mic_stream = self.p.open(
                     format=FORMAT,
-                    channels=CHANNELS,
+                    channels=self.personal_mic_channels,  # Use the actual number of channels
                     rate=RATE,
                     input=True,
                     input_device_index=self.personal_mic_id,
@@ -253,7 +257,7 @@ class AudioSystem:
                     stream_callback=self._personal_mic_callback
                 )
                 self.personal_mic_stream.start_stream()
-                print(f"Started personal mic stream (ID: {self.personal_mic_id})")
+                print(f"Started personal mic stream (ID: {self.personal_mic_id}, Channels: {self.personal_mic_channels})")
             else:
                 print("No personal mic device found, personal mic functionality will be disabled")
             
@@ -261,7 +265,7 @@ class AudioSystem:
             if self.global_mic_id is not None:
                 self.global_mic_stream = self.p.open(
                     format=FORMAT,
-                    channels=CHANNELS,
+                    channels=self.global_mic_channels,  # Use the actual number of channels
                     rate=RATE,
                     input=True,
                     input_device_index=self.global_mic_id,
@@ -269,14 +273,14 @@ class AudioSystem:
                     stream_callback=self._global_mic_callback
                 )
                 self.global_mic_stream.start_stream()
-                print(f"Started global mic stream (ID: {self.global_mic_id})")
+                print(f"Started global mic stream (ID: {self.global_mic_id}, Channels: {self.global_mic_channels})")
             else:
                 print("No global mic device found, global mic functionality will be disabled")
             
             # Start output stream
             self.output_stream = self.p.open(
                 format=FORMAT,
-                channels=CHANNELS,
+                channels=OUTPUT_CHANNELS,  # Always stereo for output
                 rate=RATE,
                 output=True,
                 output_device_index=self.output_device_id,
@@ -324,7 +328,16 @@ class AudioSystem:
         if in_data:
             # Convert bytes to numpy array
             try:
-                audio_data = np.frombuffer(in_data, dtype=np.int16).reshape(-1, CHANNELS)
+                # Handle mono vs stereo input
+                if self.personal_mic_channels == 1:
+                    # Convert mono to stereo
+                    mono_data = np.frombuffer(in_data, dtype=np.int16)
+                    # Create stereo data by duplicating mono channel
+                    stereo_data = np.column_stack((mono_data, mono_data))
+                    audio_data = stereo_data
+                else:
+                    # Already stereo
+                    audio_data = np.frombuffer(in_data, dtype=np.int16).reshape(-1, self.personal_mic_channels)
                 
                 # Store in buffer for sending
                 with self.personal_mic_lock:
@@ -339,7 +352,16 @@ class AudioSystem:
         if in_data:
             # Convert bytes to numpy array
             try:
-                audio_data = np.frombuffer(in_data, dtype=np.int16).reshape(-1, CHANNELS)
+                # Handle mono vs stereo input
+                if self.global_mic_channels == 1:
+                    # Convert mono to stereo
+                    mono_data = np.frombuffer(in_data, dtype=np.int16)
+                    # Create stereo data by duplicating mono channel
+                    stereo_data = np.column_stack((mono_data, mono_data))
+                    audio_data = stereo_data
+                else:
+                    # Already stereo
+                    audio_data = np.frombuffer(in_data, dtype=np.int16).reshape(-1, self.global_mic_channels)
                 
                 # Store in buffer for sending
                 with self.global_mic_lock:
@@ -457,6 +479,20 @@ class AudioSystem:
         # Make a copy to avoid modifying the original data
         result = audio_data.copy()
         
+        # Check if audio_data has the right shape
+        if result.ndim != 2 or result.shape[1] < 2:
+            # If mono or invalid, convert to stereo
+            if result.ndim == 1:
+                # Reshape mono to stereo
+                result = np.column_stack((result, result))
+            elif result.ndim == 2 and result.shape[1] == 1:
+                # Add second channel
+                result = np.column_stack((result.flatten(), result.flatten()))
+            else:
+                # Something's wrong, return original
+                print(f"Warning: Unexpected audio data shape: {result.shape}")
+                return result
+        
         # Mute left channel if needed
         if self.muted_channels["left"]:
             result[:, 0] = 0
@@ -553,7 +589,14 @@ class AudioSystem:
                     data, addr = self.receive_socket.recvfrom(65536)
                     
                     # Convert bytes to numpy array
-                    audio_chunk = np.frombuffer(data, dtype=np.int16).reshape(-1, CHANNELS)
+                    try:
+                        # Try to interpret as stereo data first
+                        audio_chunk = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
+                    except ValueError:
+                        # If that fails, it might be mono data
+                        mono_data = np.frombuffer(data, dtype=np.int16)
+                        # Convert mono to stereo
+                        audio_chunk = np.column_stack((mono_data, mono_data))
                     
                     # Store in buffer for playback
                     with self.received_audio_lock:
