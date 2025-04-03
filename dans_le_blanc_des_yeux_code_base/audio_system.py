@@ -317,32 +317,17 @@ class AudioSystem:
             return False
     
     def _init_audio_streams(self) -> bool:
-        """Initialize audio input and output streams with robust error handling."""
+        """Initialize audio input and output streams."""
         try:
             # Initialize output stream (always running)
-            try:
-                # First attempt with standard settings
-                self.output_stream = self.pa.open(
-                    format=self.format,
-                    channels=self.channels,
-                    rate=self.rate,
-                    output=True,
-                    output_device_index=self.output_device_id,
-                    frames_per_buffer=self.chunk_size
-                )
-            except Exception as e:
-                print(f"Standard output stream failed: {e}")
-                print("Trying with alternative output stream settings...")
-                
-                # Try with smaller buffer and different settings
-                self.output_stream = self.pa.open(
-                    format=self.format,
-                    channels=self.channels,
-                    rate=self.rate,
-                    output=True,
-                    output_device_index=self.output_device_id,
-                    frames_per_buffer=512  # Smaller buffer
-                )
+            self.output_stream = self.pa.open(
+                format=self.format,
+                channels=self.channels,
+                rate=self.rate,
+                output=True,
+                output_device_index=self.output_device_id,
+                frames_per_buffer=self.chunk_size
+            )
             
             # Start with no input stream - will be opened based on state
             self.input_stream = None
@@ -354,7 +339,7 @@ class AudioSystem:
             return False
     
     def _open_input_stream(self, device_id: int) -> bool:
-        """Open an input stream for the specified device with fallback options."""
+        """Open an input stream for the specified device."""
         # Close existing input stream if it's open
         if self.input_stream is not None:
             try:
@@ -371,42 +356,18 @@ class AudioSystem:
             
             print(f"Opening input stream for device {device_id} with {input_channels} channel(s)")
             
-            # Try with default settings first
-            try:
-                self.input_stream = self.pa.open(
-                    format=self.format,
-                    channels=input_channels,
-                    rate=self.rate,
-                    input=True,
-                    input_device_index=device_id,
-                    frames_per_buffer=self.chunk_size
-                )
-                print(f"Opened input stream for device ID {device_id}")
-                return True
-            except Exception as e1:
-                print(f"First attempt failed: {e1}")
-                print("Trying with alternative settings...")
-                
-                # Try with smaller buffer size and different stream parameters
-                try:
-                    self.input_stream = self.pa.open(
-                        format=self.format,
-                        channels=input_channels,
-                        rate=self.rate,
-                        input=True,
-                        input_device_index=device_id,
-                        frames_per_buffer=512,  # Smaller buffer
-                        stream_callback=None,   # No callback
-                        start=False             # Don't start yet
-                    )
-                    # Start manually
-                    self.input_stream.start_stream()
-                    print(f"Opened input stream with alternative settings for device ID {device_id}")
-                    return True
-                except Exception as e2:
-                    print(f"Second attempt failed: {e2}")
-                    raise  # Re-raise to be caught by outer exception handler
-                    
+            # Open new input stream with correct channel count
+            self.input_stream = self.pa.open(
+                format=self.format,
+                channels=input_channels,  # Use detected channel count, not self.channels
+                rate=self.rate,
+                input=True,
+                input_device_index=device_id,
+                frames_per_buffer=self.chunk_size
+            )
+            
+            print(f"Opened input stream for device ID {device_id}")
+            return True
         except Exception as e:
             print(f"Error opening input stream for device {device_id}: {e}")
             return False
@@ -489,39 +450,20 @@ class AudioSystem:
         system_state.update_audio_state(audio_state)
     
     def _audio_sender_loop(self) -> None:
-        """Thread function for sending audio data with robust error handling."""
+        """Thread function for sending audio data."""
         print("Audio sender thread started")
         
         packet_counter = 0
         last_report_time = time.time()
-        consecutive_errors = 0
-        max_consecutive_errors = 5
         
         while not self.stop_event.is_set():
             if not self.is_sending or self.input_stream is None:
                 time.sleep(0.1)
-                consecutive_errors = 0  # Reset error counter during idle time
                 continue
             
             try:
-                # Read data from input stream with error handling
-                try:
-                    input_data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
-                    consecutive_errors = 0  # Reset on successful read
-                except Exception as read_error:
-                    consecutive_errors += 1
-                    print(f"Error reading from audio input: {read_error}")
-                    
-                    # If we have too many consecutive errors, try to reopen the stream
-                    if consecutive_errors >= max_consecutive_errors:
-                        print(f"Too many consecutive errors ({consecutive_errors}), attempting to reopen stream")
-                        device_id = self.current_mic == 'personal' and self.personal_mic_id or self.global_mic_id
-                        if device_id is not None:
-                            self._open_input_stream(device_id)
-                        consecutive_errors = 0
-                    
-                    time.sleep(0.1)
-                    continue
+                # Read data from input stream
+                input_data = self.input_stream.read(self.chunk_size, exception_on_overflow=False)
                 
                 if input_data:
                     # Send audio data to remote
@@ -535,7 +477,6 @@ class AudioSystem:
                         rate = 1000 / elapsed if elapsed > 0 else 0
                         print(f"Audio sender: sent {packet_counter} packets, {rate:.1f} packets/second")
                         last_report_time = now
-                
             except Exception as e:
                 if self.running and not self.stop_event.is_set():
                     print(f"Error in audio sender: {e}")
@@ -561,11 +502,9 @@ class AudioSystem:
                     try:
                         samples = len(data) // 2  # 2 bytes per sample for 16-bit audio
                         if samples % 2 == 0:  # Might be stereo (2 channels)
-                            # Make a copy to ensure array is writable
-                            audio_data = np.frombuffer(data, dtype=np.int16).reshape(-1, 2).copy()
+                            audio_data = np.frombuffer(data, dtype=np.int16).reshape(-1, 2)
                         else:  # Must be mono (1 channel)
-                            # Make a copy to ensure array is writable
-                            mono_data = np.frombuffer(data, dtype=np.int16).copy()
+                            mono_data = np.frombuffer(data, dtype=np.int16)
                             # Duplicate mono to stereo for output
                             audio_data = np.column_stack((mono_data, mono_data))
                             
