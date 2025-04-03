@@ -46,9 +46,9 @@ class AudioSystem:
         self.output_stream = None
         
         # Audio buffers for sending and receiving
-        self.personal_mic_buffer = np.zeros((CHUNK_SIZE, CHANNELS), dtype=np.int16)
-        self.global_mic_buffer = np.zeros((CHUNK_SIZE, CHANNELS), dtype=np.int16)
-        self.received_audio_buffer = np.zeros((CHUNK_SIZE, CHANNELS), dtype=np.int16)
+        self.personal_mic_buffer = np.zeros((CHUNK_SIZE, OUTPUT_CHANNELS), dtype=np.int16)
+        self.global_mic_buffer = np.zeros((CHUNK_SIZE, OUTPUT_CHANNELS), dtype=np.int16)
+        self.received_audio_buffer = np.zeros((CHUNK_SIZE, OUTPUT_CHANNELS), dtype=np.int16)
         
         # Buffer locks
         self.personal_mic_lock = threading.Lock()
