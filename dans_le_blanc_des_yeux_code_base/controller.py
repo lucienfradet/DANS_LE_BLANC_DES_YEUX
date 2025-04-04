@@ -13,13 +13,13 @@ import sys
 import argparse
 import os
 import threading
-import audio_system
 from osc_handler import run_osc_handler
 from motor import MotorController
 from camera_manager import CameraManager
 from video_streamer import VideoStreamer
 from video_display import VideoDisplay
-from audio_system import AudioSystem
+from audio_streamer import AudioStreamer
+from audio_playback import AudioPlayback
 from debug_visualizer import TerminalVisualizer
 
 # Global variables
@@ -90,8 +90,10 @@ def signal_handler(sig, frame):
         video_streamer.stop()
     if 'video_display' in globals():
         video_display.stop()
-    if 'audio_system' in globals():
-        audio_system.stop()
+    if 'audio_streamer' in globals():
+        audio_streamer.stop()
+    if 'audio_playback' in globals():
+        audio_playback.stop()
     
     # Stop visualizer if it's running
     global visualizer, visualizer_active
@@ -229,17 +231,22 @@ if __name__ == "__main__":
                     # Add any audio-specific configuration here
                     print(f"Using audio settings from config: {audio_params}")
                 except (ValueError, configparser.Error) as e:
-                    print(f"Error reading audio config: {e}")
-                    print("Using defaults.")
+                    print(f"Error reading audio config: {e}. Using defaults.")
             
-            # Initialize audio system
-            print("Starting audio system...")
+            # Initialize audio streamer
+            print("Starting audio streamer...")
+            audio_streamer = AudioStreamer(remote_ip)
+            if not audio_streamer.start():
+                print("Warning: Failed to start audio streamer. Audio functionality may be limited.")
+            
+            # Initialize audio playback
+            print("Starting audio playback...")
             try:
-                audio_system = AudioSystem(remote_ip)
-                audio_system.start()
+                audio_playback = AudioPlayback(audio_streamer)
+                audio_playback.start()
             except Exception as e:
-                print(f"Error starting audio system: {e}")
-                print("Audio functionality will be limited")
+                print(f"Error starting audio playback: {e}")
+                print("Audio playback functionality will be limited")
         else:
             print("Audio components disabled by command line argument")
         
