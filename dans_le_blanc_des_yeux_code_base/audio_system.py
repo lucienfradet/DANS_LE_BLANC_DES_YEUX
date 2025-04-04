@@ -99,15 +99,28 @@ class AudioSystem:
                 print(f"Could not find mic with name '{self.mic_name}'")
                 print("Available input devices:")
                 self._print_audio_device_info(input_only=True)
+                print("\nTIP: You can manually specify input_device_index in config.ini:")
+                print("[audio]")
+                print("input_device_index=2  # Replace with the device ID for your USB Audio Device")
                 return False
             
             if self.output_device_id is None:
                 print("Could not find audio output device")
                 print("Available output devices:")
                 self._print_audio_device_info(output_only=True)
+                print("\nTIP: You can manually specify output_device_index in config.ini:")
+                print("[audio]")
+                print("output_device_index=0  # Replace with the device ID for your TX 96Khz device")
                 return False
             
-            print(f"Using input device {self.input_device_id} and output device {self.output_device_id}")
+            # Print details of the selected devices
+            if self.input_device_id is not None:
+                input_device_info = self.p.get_device_info_by_index(self.input_device_id)
+                print(f"Selected input device {self.input_device_id}: {input_device_info.get('name', 'Unknown')}")
+                
+            if self.output_device_id is not None:
+                output_device_info = self.p.get_device_info_by_index(self.output_device_id)
+                print(f"Selected output device {self.output_device_id}: {output_device_info.get('name', 'Unknown')}")
             
             # Start audio streams
             if not self._start_audio_streams():
@@ -136,6 +149,8 @@ class AudioSystem:
             return True
         except Exception as e:
             print(f"Error starting audio system: {e}")
+            import traceback
+            traceback.print_exc()
             self.running = False
             return False
     
@@ -192,7 +207,7 @@ class AudioSystem:
         if not self.p:
             return
             
-        print("\n--- Audio Devices ---")
+        print("\n--- PyAudio Devices ---")
         for i in range(self.p.get_device_count()):
             try:
                 dev_info = self.p.get_device_info_by_index(i)
@@ -207,31 +222,84 @@ class AudioSystem:
                 print(f"  Input channels: {dev_info.get('maxInputChannels', 0)}")
                 print(f"  Output channels: {dev_info.get('maxOutputChannels', 0)}")
                 print(f"  Default sample rate: {dev_info.get('defaultSampleRate', 0)}")
+                if 'hostApi' in dev_info:
+                    host_api_info = self.p.get_host_api_info_by_index(dev_info['hostApi'])
+                    print(f"  Host API: {host_api_info.get('name', 'Unknown')}")
                 
                 # Highlight the mic we're looking for
                 if self.mic_name.lower() in dev_info.get('name', '').lower():
                     print(f"  --> MATCHES CONFIGURED MIC NAME '{self.mic_name}'")
             except Exception as e:
                 print(f"Error getting device info for device {i}: {e}")
-        print("--- End Audio Devices ---\n")
+        print("--- End PyAudio Devices ---\n")
+        
+        # Also print ALSA device info for better debugging
+        try:
+            self._print_audio_device_info_alsa()
+        except Exception as e:
+            print(f"Error printing ALSA device info: {e}")
     
     def _find_input_device(self) -> Optional[int]:
         """Find the ID of the specified input device (mic)."""
         if not self.p:
             return None
             
-        # Try to find a device with a matching name
+        # Check if we have a specific device index in config
+        try:
+            if 'audio' in self.config and 'input_device_index' in self.config['audio']:
+                idx = int(self.config['audio']['input_device_index'])
+                dev_info = self.p.get_device_info_by_index(idx)
+                if dev_info.get('maxInputChannels', 0) > 0:
+                    print(f"Using configured input device index {idx}: {dev_info.get('name', 'Unknown')}")
+                    return idx
+        except Exception as e:
+            print(f"Error using configured input device index: {e}")
+                
+        # Try to find a device with any of these potential matches
+        search_terms = [
+            self.mic_name.lower(),
+            "usb audio device",
+            "audio device",
+            "usb audio"
+        ]
+        
+        # First full match pass
+        for i in range(self.p.get_device_count()):
+            try:
+                dev_info = self.p.get_device_info_by_index(i)
+                if dev_info.get('maxInputChannels', 0) > 0:
+                    dev_name = dev_info.get('name', '').lower()
+                    for term in search_terms:
+                        if term in dev_name:
+                            print(f"Found input device: {dev_info.get('name', 'Unknown')}")
+                            return i
+            except Exception:
+                continue
+        
+        # Try to find a USB audio input device
         for i in range(self.p.get_device_count()):
             try:
                 dev_info = self.p.get_device_info_by_index(i)
                 if (dev_info.get('maxInputChannels', 0) > 0 and 
-                    self.mic_name.lower() in dev_info.get('name', '').lower()):
-                    print(f"Found input device: {dev_info.get('name', 'Unknown')}")
+                    "usb" in dev_info.get('name', '').lower() and
+                    "audio" in dev_info.get('name', '').lower()):
+                    print(f"Found USB audio input device: {dev_info.get('name', 'Unknown')}")
+                    return i
+            except Exception:
+                continue
+                
+        # If not found, try to find any hardware input device
+        for i in range(self.p.get_device_count()):
+            try:
+                dev_info = self.p.get_device_info_by_index(i)
+                if (dev_info.get('maxInputChannels', 0) > 0 and
+                    "hw:" in dev_info.get('name', '').lower()):
+                    print(f"Found hardware input device: {dev_info.get('name', 'Unknown')}")
                     return i
             except Exception:
                 continue
         
-        # If not found, try to use the default input device
+        # If still not found, try to use the default input device
         try:
             default_input = self.p.get_default_input_device_info()
             print(f"Using default input device: {default_input.get('name', 'Unknown')}")
@@ -244,19 +312,44 @@ class AudioSystem:
         if not self.p:
             return None
             
+        # Check if we have a specific device index in config
+        try:
+            if 'audio' in self.config and 'output_device_index' in self.config['audio']:
+                idx = int(self.config['audio']['output_device_index'])
+                dev_info = self.p.get_device_info_by_index(idx)
+                if dev_info.get('maxOutputChannels', 0) > 0:
+                    print(f"Using configured output device index {idx}: {dev_info.get('name', 'Unknown')}")
+                    return idx
+        except Exception as e:
+            print(f"Error using configured output device index: {e}")
+            
         # First try to find the TX 96Khz device mentioned in requirements
         for i in range(self.p.get_device_count()):
             try:
                 dev_info = self.p.get_device_info_by_index(i)
-                if (dev_info.get('maxOutputChannels', 0) > 0 and 
-                    "tx" in dev_info.get('name', '').lower() and
-                    "96" in dev_info.get('name', '')):
-                    print(f"Found TX 96Khz output device: {dev_info.get('name', 'Unknown')}")
-                    return i
+                dev_name = dev_info.get('name', '').lower()
+                if dev_info.get('maxOutputChannels', 0) > 0:
+                    # Try different variations of the name that might appear
+                    if ("tx" in dev_name and "96" in dev_name) or \
+                       ("96khz" in dev_name) or \
+                       ("tx 96khz" in dev_name):
+                        print(f"Found TX 96Khz output device: {dev_info.get('name', 'Unknown')}")
+                        return i
             except Exception:
                 continue
         
-        # If TX 96Khz not found, try any output device
+        # If TX 96Khz not found, try hardware output devices
+        for i in range(self.p.get_device_count()):
+            try:
+                dev_info = self.p.get_device_info_by_index(i)
+                if (dev_info.get('maxOutputChannels', 0) > 0 and
+                    "hw:" in dev_info.get('name', '').lower()):
+                    print(f"Found hardware output device: {dev_info.get('name', 'Unknown')}")
+                    return i
+            except Exception:
+                continue
+                
+        # Try any output device
         for i in range(self.p.get_device_count()):
             try:
                 dev_info = self.p.get_device_info_by_index(i)
