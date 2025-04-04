@@ -77,32 +77,11 @@ if [ ! -e "/dev/ttyACM0" ]; then
     fi
 fi
 
-# Check JACK dependencies
-echo "Checking JACK dependencies..."
-if ! command -v jackd >/dev/null 2>&1; then
-    echo "Installing JACK audio dependencies..."
-    sudo apt install -y jackd2 libjack-jackd2-dev jack-tools
-fi
-
-if ! command -v jack.udp_sender >/dev/null 2>&1; then
-    echo "Installing zita-njbridge for NetJack functionality..."
-    sudo apt install -y zita-njbridge
-fi
-
-# Install Python JACK client
-echo "Installing Python JACK client..."
-pip3 install JACK-client
-
-# Set up audio for JACK if audio is enabled
+# Check audio devices if audio is enabled
 if [ $DISABLE_AUDIO -eq 0 ]; then
-    echo "Setting up audio for JACK..."
+    echo "Setting up audio devices..."
     
-    # Kill any existing JACK processes
-    killall -9 jackd 2>/dev/null || true
-    killall -9 jack.udp_sender 2>/dev/null || true
-    killall -9 jack.udp_receiver 2>/dev/null || true
-    
-    # Unmute all audio devices (still useful for initial setup)
+    # Unmute all audio devices
     if command_exists amixer; then
         # Try to unmute master volume
         amixer sset Master unmute >/dev/null 2>&1 || true
@@ -119,13 +98,21 @@ if [ $DISABLE_AUDIO -eq 0 ]; then
         amixer -c 3 sset 'Mic' 80% >/dev/null 2>&1 || true
     fi
     
-    # Check available audio devices
-    echo "Available audio devices:"
-    arecord -l
-    aplay -l
+    # Set PulseAudio volume levels if PulseAudio is running
+    if command_exists pactl; then
+        # Try to set default sink volume
+        pactl set-sink-volume @DEFAULT_SINK@ 80% >/dev/null 2>&1 || true
+        pactl set-sink-mute @DEFAULT_SINK@ 0 >/dev/null 2>&1 || true
+        
+        # Try to set default source volume
+        pactl set-source-volume @DEFAULT_SOURCE@ 80% >/dev/null 2>&1 || true
+        pactl set-source-mute @DEFAULT_SOURCE@ 0 >/dev/null 2>&1 || true
+    fi
     
-    # JACK will be started by the AudioSystem class
-    echo "JACK will be initialized by the audio_system module"
+    # Make sure required Python audio packages are installed
+    pip3 install pyaudio pydub >/dev/null 2>&1 || echo "Warning: Could not install audio packages - audio functionality may be limited"
+    
+    echo "Audio setup complete"
 fi
 
 # Check for cameras if video is enabled
