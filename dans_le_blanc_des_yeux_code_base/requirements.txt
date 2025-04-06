@@ -1,6 +1,18 @@
-pyserial
-python-osc
-opencv-python
-numpy
-pyaudio
-pydub
+# GStreamer and Python bindings
+PyGObject>=3.42.0
+
+# Audio processing
+numpy>=1.20.0
+
+# OSC and networking
+python-osc>=1.8.0
+pyserial>=3.5
+
+# Camera handling
+opencv-python>=4.5.0
+
+# Configuration
+configparser>=5.0.0
+
+# For terminal visualization
+blessed>=1.19.0
