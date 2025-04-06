@@ -59,9 +59,35 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Check GStreamer
+echo "Checking GStreamer installation..."
+python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "GStreamer Python bindings not found, installing GStreamer packages..."
+    
+    # Install GStreamer core packages and plugins
+    sudo apt update
+    sudo apt install -y gstreamer1.0-tools gstreamer1.0-alsa gstreamer1.0-plugins-base \
+                        gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+                        gstreamer1.0-gl libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+    
+    # Install Python GStreamer bindings
+    sudo apt install -y python3-gi python3-gst-1.0 python3-gi-cairo
+    
+    # Verify installation
+    python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; Gst.init(None); print('GStreamer', Gst.version_string())" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "Warning: GStreamer installation may not be complete. Audio functionality may be limited."
+    else
+        echo "GStreamer installed successfully."
+    fi
+else
+    echo "GStreamer is already installed."
+fi
+
 # Install Python requirements using apt where possible
 echo "Installing Python requirements..."
-sudo apt install -y python3-pip python3-numpy python3-serial python3-opencv python3-pyaudio
+sudo apt install -y python3-pip python3-numpy python3-serial python3-opencv
 
 # For packages not available via apt, use pip with requirements file
 pip3 install -r requirements.txt 2>/dev/null || echo "Some pip packages may not have installed. This is okay if they're available via apt."
@@ -80,6 +106,12 @@ fi
 # Check audio devices if audio is enabled
 if [ $DISABLE_AUDIO -eq 0 ]; then
     echo "Setting up audio devices..."
+    
+    # List available audio devices using GStreamer
+    echo "GStreamer audio devices:"
+    gst-device-monitor-1.0 Audio/Source || true
+    echo "GStreamer audio output devices:"
+    gst-device-monitor-1.0 Audio/Sink || true
     
     # Unmute all audio devices
     if command_exists amixer; then
@@ -109,8 +141,8 @@ if [ $DISABLE_AUDIO -eq 0 ]; then
         pactl set-source-mute @DEFAULT_SOURCE@ 0 >/dev/null 2>&1 || true
     fi
     
-    # Make sure required Python audio packages are installed
-    pip3 install pyaudio pydub >/dev/null 2>&1 || echo "Warning: Could not install audio packages - audio functionality may be limited"
+    # Restart ALSA if needed to ensure audio devices are properly recognized
+    sudo alsa force-reload >/dev/null 2>&1 || true
     
     echo "Audio setup complete"
 fi
@@ -233,6 +265,10 @@ fi
 export OPENCV_VIDEOIO_PRIORITY_MSMF=0       # Disable Microsoft Media Foundation
 export OPENCV_VIDEOIO_PRIORITY_INTEL_MFX=0  # Disable Intel Media SDK
 export OPENCV_FFMPEG_LOGLEVEL=0             # Disable FFMPEG logging
+
+# Set GStreamer debug level (uncomment to enable debugging)
+# export GST_DEBUG=3
+# export GST_DEBUG_FILE=gstreamer_debug.log
 
 # Start the application with appropriate arguments
 echo "Starting Dans le Blanc des Yeux..."

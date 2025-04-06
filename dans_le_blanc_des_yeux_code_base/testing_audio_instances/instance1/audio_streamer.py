@@ -42,6 +42,7 @@ RETRY_DELAY = 2  # Seconds between retries
 
 # Network configuration
 AUDIO_PORT = 6000  # Base port for audio streaming
+REMOTE_PORT = 6001  # Base port for audio streaming
 
 class AudioStreamer:
     """Handles audio streaming between devices using GStreamer."""
@@ -361,55 +362,20 @@ class AudioStreamer:
     #         time.sleep(5)
     
     def _create_sender_pipeline(self, mic_type: str) -> Optional[Gst.Pipeline]:
-        """Create a GStreamer pipeline for sending audio from the specified mic.
-        
-        Args:
-            mic_type: Either "personal" for TX mic or "global" for USB mic
-        
-        Returns:
-            The created GStreamer pipeline or None if failed
-        """
+        """Create a GStreamer pipeline for sending audio from the specified mic."""
         try:
+            # Use device names directly with pulsesrc
             if mic_type == "personal":
-                if not self.personal_mic_alsa_device:
-                    print(f"Personal mic not available, retrying...")
-                    if self.personal_mic_retries < MAX_RETRY_ATTEMPTS:
-                        self.personal_mic_retries += 1
-                        time.sleep(RETRY_DELAY)
-                        self._find_audio_devices()
-                        if not self.personal_mic_alsa_device:
-                            print(f"Still can't find personal mic after retry {self.personal_mic_retries}/{MAX_RETRY_ATTEMPTS}")
-                            return None
-                    else:
-                        print(f"Max retries reached for personal mic")
-                        return None
-                
-                device = self.personal_mic_alsa_device
+                device_name = "virtual_tx.monitor"
             else:  # global
-                if not self.global_mic_alsa_device:
-                    print(f"Global mic not available, retrying...")
-                    if self.global_mic_retries < MAX_RETRY_ATTEMPTS:
-                        self.global_mic_retries += 1
-                        time.sleep(RETRY_DELAY)
-                        self._find_audio_devices()
-                        if not self.global_mic_alsa_device:
-                            print(f"Still can't find global mic after retry {self.global_mic_retries}/{MAX_RETRY_ATTEMPTS}")
-                            return None
-                    else:
-                        print(f"Max retries reached for global mic")
-                        return None
-                
-                device = self.global_mic_alsa_device
+                device_name = "virtual_usb.monitor"
             
             # Create a unique pipeline name
             pipeline_name = f"{mic_type}_pipeline_{int(time.time())}"
             
-            # Create a sender pipeline using alsasrc and udpsink
-            # We'll use device= for the ALSA device if it's a direct path
-            device_spec = f"device=\"{device}\"" if device.startswith("/") else f"device={device}"
-            
+            # Create a sender pipeline using pulsesrc and appsink
             pipeline_str = (
-                f"alsasrc {device_spec} name=source ! "
+                f"pulsesrc device={device_name} ! "
                 f"audio/x-raw, rate={RATE}, channels={CHANNELS} ! "
                 "audioconvert ! "
                 "audioresample ! "
@@ -432,7 +398,7 @@ class AudioStreamer:
             else:
                 sink.connect("new-sample", self._on_global_sample)
             
-            # Add message handlers for errors, warnings, and EOS
+            # Add message handlers
             bus = pipeline.get_bus()
             bus.add_signal_watch()
             bus.connect("message::error", self._on_pipeline_error, mic_type)
@@ -505,7 +471,7 @@ class AudioStreamer:
             packet = b'\x00\x00\x00\x00' + mic_id_byte + audio_data
             
             # Send packet
-            sock.sendto(packet, (self.remote_ip, AUDIO_PORT))
+            sock.sendto(packet, (self.remote_ip, REMOTE_PORT))
             
             # Close socket
             sock.close()
