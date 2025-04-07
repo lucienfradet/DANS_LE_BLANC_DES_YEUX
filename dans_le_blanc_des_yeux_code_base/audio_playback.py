@@ -287,6 +287,42 @@ class AudioPlayback:
         # We don't need to do anything here with GStreamer as it's handled directly
         # by the pipelines, but we keep the callback for compatibility
         pass
+
+    def _process_header_and_forward(self, sink, playback_pipeline) -> Gst.FlowReturn:
+        """Process header and forward audio data to the playback pipeline."""
+        sample = sink.emit("pull-sample")
+        if not sample:
+            return Gst.FlowReturn.ERROR
+        
+        buffer = sample.get_buffer()
+        success, map_info = buffer.map(Gst.MapFlags.READ)
+        
+        if not success:
+            buffer.unmap(map_info)
+            return Gst.FlowReturn.ERROR
+        
+        # Get the raw data and process headers
+        packet_data = bytes(map_info.data)
+        buffer.unmap(map_info)
+        
+        if len(packet_data) <= 5:
+            print("Warning: Received packet too small to contain header and audio data")
+            return Gst.FlowReturn.OK
+        
+        # Skip the first 5 bytes (4-byte sequence + 1-byte mic type)
+        audio_data = packet_data[5:]
+        
+        # Forward to playback pipeline
+        audio_source = playback_pipeline.get_by_name("audio_source")
+        
+        # Create a new buffer for the stripped audio data
+        new_buffer = Gst.Buffer.new_allocate(None, len(audio_data), None)
+        new_buffer.fill(0, audio_data)
+        
+        # Push the buffer to the playback pipeline
+        result = audio_source.emit("push-buffer", new_buffer)
+        
+        return Gst.FlowReturn.OK
     
     def _create_playback_pipeline(self) -> Optional[Gst.Pipeline]:
         """Create a GStreamer pipeline for audio playback with channel muting."""
@@ -313,48 +349,92 @@ class AudioPlayback:
                 return None
             
             # Start with udpsrc for receiving RTP audio
+            # pipeline_str = (
+            #     f"udpsrc port={self.audio_streamer.AUDIO_PORT} ! "
+            #     "queue max-size-bytes=65536 ! "
+            #     f"application/x-rtp,media=audio,clock-rate={RATE},encoding-name=L16,channels={CHANNELS} ! "
+            #     "rtpL16depay ! "
+            #     "audioconvert ! "
+            #     "audioresample ! "
+            #     "audio/x-raw, format=S16LE, channels=2 ! "
+            # )
+
+            # Use a custom udpsrc pipeline that handles our header format
             pipeline_str = (
                 f"udpsrc port={self.audio_streamer.AUDIO_PORT} ! "
                 "queue max-size-bytes=65536 ! "
-                f"application/x-rtp,media=audio,clock-rate={RATE},encoding-name=L16,channels={CHANNELS} ! "
-                "rtpL16depay ! "
+                # Changed from RTP to custom UDP format
+                "application/x-udp, encoding-name=RAW ! "
+                # Add a custom header-stripping element
+                f"appsink name=header_sink emit-signals=true max-buffers=10 drop=true sync=false"
+            )
+
+            print(f"Creating custom header-handling pipeline: {pipeline_str}")
+            pipeline = Gst.parse_launch(pipeline_str)
+            pipeline.set_name(pipeline_name)
+            
+            # Set up a second pipeline for playback after header stripping
+            playback_str = (
+                "appsrc name=audio_source format=time is-live=true ! "
+                "audio/x-raw, format=S16LE, rate=44100, channels=2 ! "
                 "audioconvert ! "
                 "audioresample ! "
-                "audio/x-raw, format=S16LE, channels=2 ! "
             )
             
             # Add appropriate channel muting filter
             if self.playback_state == "mute_left":
                 # Use audiochannelmix to mute the left channel
-                pipeline_str += (
+                playback_str += (
                     "audiochannelmix in-channels=2 out-channels=2 matrix=\"{ 0.0, 0.0, 1.0, 1.0 }\" ! "
                 )
+                # pipeline_str += (
+                #     "audiochannelmix in-channels=2 out-channels=2 matrix=\"{ 0.0, 0.0, 1.0, 1.0 }\" ! "
+                # )
             elif self.playback_state == "mute_right":
                 # Use audiochannelmix to mute the right channel
-                pipeline_str += (
+                playback_str += (
                     "audiochannelmix in-channels=2 out-channels=2 matrix=\"{ 1.0, 1.0, 0.0, 0.0 }\" ! "
                 )
+                # pipeline_str += (
+                #     "audiochannelmix in-channels=2 out-channels=2 matrix=\"{ 1.0, 1.0, 0.0, 0.0 }\" ! "
+                # )
             
             # Add the alsasink with device specification
             # We'll use device= for the ALSA device if it's a direct path
             device_spec = f"device=\"{self.speaker_device}\"" if self.speaker_device.startswith("/") else f"device={self.speaker_device}"
             
-            pipeline_str += (
+            playback_str += (
                 f"alsasink {device_spec} sync=false buffer-time=50000"
             )
+            # pipeline_str += (
+            #     f"alsasink {device_spec} sync=false buffer-time=50000"
+            # )
             
             print(f"Creating playback pipeline: {pipeline_str}")
             
-            pipeline = Gst.parse_launch(pipeline_str)
-            pipeline.set_name(pipeline_name)
+            playback_pipeline = Gst.parse_launch(playback_str)
+            # pipeline = Gst.parse_launch(pipeline_str)
+            playback_pipeline.set_name(f"{pipeline_name}_playback")
+            # pipeline.set_name(pipeline_name)
+
+            # Set up the header processing
+            header_sink = pipeline.get_by_name("header_sink")
+            header_sink.connect("new-sample", self._process_header_and_forward, playback_pipeline)
+
+            # Start the playback pipeline
+            playback_pipeline.set_state(Gst.State.PLAYING)
             
             # Add message handlers for errors, warnings, and EOS
-            bus = pipeline.get_bus()
+            # bus = pipeline.get_bus()
+            bus = playback_pipeline.get_bus()
             bus.add_signal_watch()
             bus.connect("message::error", self._on_pipeline_error)
             bus.connect("message::warning", self._on_pipeline_warning)
             bus.connect("message::eos", self._on_pipeline_eos)
             
+            # Store both pipelines (we'll need to stop both)
+            self.playback_pipeline = [pipeline, playback_pipeline]
+
             return pipeline
             
         except Exception as e:
@@ -427,8 +507,12 @@ class AudioPlayback:
         """Stop the audio playback pipeline."""
         if self.playback_pipeline:
             try:
-                # Set state to NULL for clean shutdown
-                self.playback_pipeline.set_state(Gst.State.NULL)
+                # Handle both single pipeline and array of pipelines
+                if isinstance(self.playback_pipeline, list):
+                    for pipeline in self.playback_pipeline:
+                        pipeline.set_state(Gst.State.NULL)
+                else:
+                    self.playback_pipeline.set_state(Gst.State.NULL)
                 
                 # Give time for the pipeline to shut down
                 time.sleep(0.2)
