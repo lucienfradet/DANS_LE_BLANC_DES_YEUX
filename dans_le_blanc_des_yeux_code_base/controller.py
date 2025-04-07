@@ -13,18 +13,14 @@ import sys
 import argparse
 import os
 import threading
-from osc_handler import run_osc_handler
-from motor import MotorController
-from camera_manager import CameraManager
-from video_streamer import VideoStreamer
-from video_display import VideoDisplay
-from debug_visualizer import TerminalVisualizer
+import subprocess
 
-# Import GStreamer before OpenCV to ensure proper initialization order
+# Initialize GStreamer BEFORE importing OpenCV-related modules
+# This ensures GStreamer is initialized in the main thread
 try:
     import gi
     gi.require_version('Gst', '1.0')
-    from gi.repository import Gst, GLib
+    from gi.repository import Gst
     Gst.init(None)
     GSTREAMER_AVAILABLE = True
     print("GStreamer initialized successfully")
@@ -32,6 +28,14 @@ except (ImportError, ValueError) as e:
     print(f"WARNING: GStreamer not available: {e}")
     print("Audio functionality will be limited")
     GSTREAMER_AVAILABLE = False
+
+# Import other components after GStreamer is initialized
+from osc_handler import run_osc_handler
+from motor import MotorController
+from camera_manager import CameraManager
+from video_streamer import VideoStreamer
+from video_display import VideoDisplay
+from debug_visualizer import TerminalVisualizer
 
 # Only import audio components if GStreamer is available
 if GSTREAMER_AVAILABLE:
@@ -94,19 +98,22 @@ def signal_handler(sig, frame):
     stop_input_thread = True
     
     # Stop all components in the correct order
-    # First stop audio playback, which depends on streamer
+    # First audio components
     if 'audio_playback' in globals() and audio_playback is not None:
         try:
             audio_playback.stop()
             print("Audio playback stopped successfully")
+            # Add small delay to ensure audio resources are released
+            time.sleep(0.5)
         except Exception as e:
             print(f"Error stopping audio playback: {e}")
     
-    # Then stop audio streamer
     if 'audio_streamer' in globals() and audio_streamer is not None:
         try:
             audio_streamer.stop()
             print("Audio streamer stopped successfully")
+            # Add small delay to ensure audio resources are released
+            time.sleep(0.5)
         except Exception as e:
             print(f"Error stopping audio streamer: {e}")
     
@@ -177,6 +184,9 @@ def initialize_components():
     # Set default values for components that might not be initialized
     audio_streamer = None
     audio_playback = None
+    camera_manager = None
+    video_streamer = None
+    video_display = None
     
     # Load configuration
     config = configparser.ConfigParser()
@@ -218,7 +228,7 @@ def initialize_components():
             
     motor_controller.start()
     
-    return remote_ip, config
+    return remote_ip, config, (osc_handler, serial_handler, motor_controller)
 
 def initialize_video_components(remote_ip, config, disable_video):
     """Initialize video components if not disabled."""
@@ -231,7 +241,7 @@ def initialize_video_components(remote_ip, config, disable_video):
     
     if disable_video:
         print("Video components disabled by command line argument")
-        return
+        return None, None, None
     
     # Get video settings from config or use defaults
     video_params = {}
@@ -250,6 +260,17 @@ def initialize_video_components(remote_ip, config, disable_video):
         print("WARNING: No display detected (DISPLAY environment variable not set)")
         print("Video display component may not work properly")
     
+    # Release any ALSA resources before initializing cameras
+    if GSTREAMER_AVAILABLE:
+        try:
+            # Use subprocess to run ALSA force-reload to ensure clean state
+            subprocess.run(["sudo", "alsa", "force-reload"], 
+                           stdout=subprocess.DEVNULL, 
+                           stderr=subprocess.DEVNULL)
+            time.sleep(1)  # Wait for ALSA to reinitialize
+        except Exception as e:
+            print(f"Could not reset ALSA: {e}")
+    
     # Initialize enhanced camera manager with improved error handling
     print("Starting camera manager...")
     camera_manager = CameraManager(
@@ -264,6 +285,7 @@ def initialize_video_components(remote_ip, config, disable_video):
     )
     if not camera_manager.start():
         print("Warning: Failed to start camera manager. Video functionality may be limited.")
+        return None, None, None
     
     # Initialize video streamer
     print("Starting video streamer...")
@@ -294,11 +316,11 @@ def initialize_audio_components(remote_ip, config, disable_audio):
     
     if disable_audio:
         print("Audio components disabled by command line argument")
-        return
+        return None, None
     
     if not GSTREAMER_AVAILABLE:
         print("GStreamer not available - cannot initialize audio components")
-        return
+        return None, None
     
     # Get audio settings from config or use defaults
     audio_params = {}
@@ -308,6 +330,21 @@ def initialize_audio_components(remote_ip, config, disable_audio):
             print(f"Using audio settings from config: {audio_params}")
         except (ValueError, configparser.Error) as e:
             print(f"Error reading audio config: {e}. Using defaults.")
+    
+    # PulseAudio configuration check
+    try:
+        # Check if PulseAudio is running
+        result = subprocess.run(["pulseaudio", "--check"], 
+                              stdout=subprocess.PIPE, 
+                              stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            print("Starting PulseAudio server...")
+            subprocess.run(["pulseaudio", "--start"], 
+                          stdout=subprocess.PIPE, 
+                          stderr=subprocess.PIPE)
+            time.sleep(1)  # Give it time to start
+    except Exception as e:
+        print(f"PulseAudio check/start failed: {e}")
     
     # Initialize audio streamer (must be started first)
     print("Starting audio streamer...")
@@ -321,6 +358,9 @@ def initialize_audio_components(remote_ip, config, disable_audio):
         print("Audio functionality will be limited")
         return None, None
     
+    # Wait for streamer to initialize fully
+    time.sleep(0.5)
+    
     # Initialize audio playback (after streamer is ready)
     print("Starting audio playback...")
     try:
@@ -329,6 +369,9 @@ def initialize_audio_components(remote_ip, config, disable_audio):
     except Exception as e:
         print(f"Error starting audio playback: {e}")
         print("Audio playback functionality will be limited")
+        if audio_streamer:
+            audio_streamer.stop()
+        return None, None
     
     return audio_streamer, audio_playback
 
@@ -360,13 +403,20 @@ if __name__ == "__main__":
         input_thread.start()
         
         # Initialize core components
-        remote_ip, config = initialize_components()
+        remote_ip, config, core_components = initialize_components()
         
-        # Initialize video components if not disabled
-        camera_manager, video_streamer, video_display = initialize_video_components(remote_ip, config, args.disable_video)
+        # Keep references to avoid garbage collection
+        osc_handler, serial_handler, motor_controller = core_components
         
-        # Initialize audio components if not disabled - after video to avoid threading issues
-        audio_streamer, audio_playback = initialize_audio_components(remote_ip, config, args.disable_audio)
+        # Initialize audio first (important for resource management)
+        if not args.disable_audio:
+            audio_streamer, audio_playback = initialize_audio_components(remote_ip, config, args.disable_audio)
+            # Add delay to allow audio components to stabilize
+            time.sleep(1)
+        
+        # Initialize video components after audio
+        if not args.disable_video:
+            camera_manager, video_streamer, video_display = initialize_video_components(remote_ip, config, args.disable_video)
         
         # Keep main thread alive while the input thread handles commands
         while True:
