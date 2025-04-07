@@ -13,26 +13,30 @@ import sys
 import argparse
 import os
 import threading
-import gi
 from osc_handler import run_osc_handler
 from motor import MotorController
 from camera_manager import CameraManager
 from video_streamer import VideoStreamer
 from video_display import VideoDisplay
-from audio_streamer import AudioStreamer
-from audio_playback import AudioPlayback
 from debug_visualizer import TerminalVisualizer
 
-# Check for GStreamer
+# Import GStreamer before OpenCV to ensure proper initialization order
 try:
+    import gi
     gi.require_version('Gst', '1.0')
-    from gi.repository import Gst
+    from gi.repository import Gst, GLib
     Gst.init(None)
     GSTREAMER_AVAILABLE = True
+    print("GStreamer initialized successfully")
 except (ImportError, ValueError) as e:
     print(f"WARNING: GStreamer not available: {e}")
     print("Audio functionality will be limited")
     GSTREAMER_AVAILABLE = False
+
+# Only import audio components if GStreamer is available
+if GSTREAMER_AVAILABLE:
+    from audio_streamer import AudioStreamer
+    from audio_playback import AudioPlayback
 
 # Global variables
 visualizer = None
@@ -91,7 +95,7 @@ def signal_handler(sig, frame):
     
     # Stop all components in the correct order
     # First stop audio playback, which depends on streamer
-    if 'audio_playback' in globals():
+    if 'audio_playback' in globals() and audio_playback is not None:
         try:
             audio_playback.stop()
             print("Audio playback stopped successfully")
@@ -99,7 +103,7 @@ def signal_handler(sig, frame):
             print(f"Error stopping audio playback: {e}")
     
     # Then stop audio streamer
-    if 'audio_streamer' in globals():
+    if 'audio_streamer' in globals() and audio_streamer is not None:
         try:
             audio_streamer.stop()
             print("Audio streamer stopped successfully")
@@ -107,21 +111,21 @@ def signal_handler(sig, frame):
             print(f"Error stopping audio streamer: {e}")
     
     # Stop video components
-    if 'video_display' in globals():
+    if 'video_display' in globals() and video_display is not None:
         try:
             video_display.stop()
             print("Video display stopped successfully")
         except Exception as e:
             print(f"Error stopping video display: {e}")
             
-    if 'video_streamer' in globals():
+    if 'video_streamer' in globals() and video_streamer is not None:
         try:
             video_streamer.stop()
             print("Video streamer stopped successfully")
         except Exception as e:
             print(f"Error stopping video streamer: {e}")
             
-    if 'camera_manager' in globals():
+    if 'camera_manager' in globals() and camera_manager is not None:
         try:
             camera_manager.stop()
             print("Camera manager stopped successfully")
@@ -129,7 +133,7 @@ def signal_handler(sig, frame):
             print(f"Error stopping camera manager: {e}")
     
     # Stop motor controller
-    if 'motor_controller' in globals():
+    if 'motor_controller' in globals() and motor_controller is not None:
         try:
             motor_controller.stop()
             print("Motor controller stopped successfully")
@@ -137,7 +141,7 @@ def signal_handler(sig, frame):
             print(f"Error stopping motor controller: {e}")
     
     # Stop serial handler
-    if 'serial_handler' in globals():
+    if 'serial_handler' in globals() and serial_handler is not None:
         try:
             serial_handler.disconnect()
             print("Serial handler stopped successfully")
@@ -145,7 +149,7 @@ def signal_handler(sig, frame):
             print(f"Error stopping serial handler: {e}")
     
     # Stop OSC handler
-    if 'osc_handler' in globals():
+    if 'osc_handler' in globals() and osc_handler is not None:
         try:
             osc_handler.stop()
             print("OSC handler stopped successfully")
@@ -169,6 +173,10 @@ def initialize_components():
     global osc_handler, serial_handler, motor_controller
     global camera_manager, video_streamer, video_display
     global audio_streamer, audio_playback
+    
+    # Set default values for components that might not be initialized
+    audio_streamer = None
+    audio_playback = None
     
     # Load configuration
     config = configparser.ConfigParser()
@@ -215,6 +223,11 @@ def initialize_components():
 def initialize_video_components(remote_ip, config, disable_video):
     """Initialize video components if not disabled."""
     global camera_manager, video_streamer, video_display
+    
+    # Default values
+    camera_manager = None
+    video_streamer = None
+    video_display = None
     
     if disable_video:
         print("Video components disabled by command line argument")
@@ -268,10 +281,16 @@ def initialize_video_components(remote_ip, config, disable_video):
             print("Video display functionality will be limited")
     else:
         print("Skipping video display initialization (no display available)")
+    
+    return camera_manager, video_streamer, video_display
 
 def initialize_audio_components(remote_ip, config, disable_audio):
     """Initialize audio components if not disabled."""
     global audio_streamer, audio_playback
+    
+    # Default values
+    audio_streamer = None
+    audio_playback = None
     
     if disable_audio:
         print("Audio components disabled by command line argument")
@@ -296,11 +315,11 @@ def initialize_audio_components(remote_ip, config, disable_audio):
         audio_streamer = AudioStreamer(remote_ip)
         if not audio_streamer.start():
             print("Warning: Failed to start audio streamer. Audio functionality may be limited.")
-            return
+            return None, None
     except Exception as e:
         print(f"Error starting audio streamer: {e}")
         print("Audio functionality will be limited")
-        return
+        return None, None
     
     # Initialize audio playback (after streamer is ready)
     print("Starting audio playback...")
@@ -310,6 +329,8 @@ def initialize_audio_components(remote_ip, config, disable_audio):
     except Exception as e:
         print(f"Error starting audio playback: {e}")
         print("Audio playback functionality will be limited")
+    
+    return audio_streamer, audio_playback
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -342,10 +363,10 @@ if __name__ == "__main__":
         remote_ip, config = initialize_components()
         
         # Initialize video components if not disabled
-        initialize_video_components(remote_ip, config, args.disable_video)
+        camera_manager, video_streamer, video_display = initialize_video_components(remote_ip, config, args.disable_video)
         
-        # Initialize audio components if not disabled
-        initialize_audio_components(remote_ip, config, args.disable_audio)
+        # Initialize audio components if not disabled - after video to avoid threading issues
+        audio_streamer, audio_playback = initialize_audio_components(remote_ip, config, args.disable_audio)
         
         # Keep main thread alive while the input thread handles commands
         while True:
