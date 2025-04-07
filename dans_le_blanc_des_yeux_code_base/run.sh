@@ -59,30 +59,64 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Check GStreamer
-echo "Checking GStreamer installation..."
-python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst" 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo "GStreamer Python bindings not found, installing GStreamer packages..."
+# Install GStreamer and all required components
+install_gstreamer() {
+    echo "Installing GStreamer and all required components..."
     
-    # Install GStreamer core packages and plugins
+    # Update package lists
     sudo apt update
-    sudo apt install -y gstreamer1.0-tools gstreamer1.0-alsa gstreamer1.0-plugins-base \
-                        gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
-                        gstreamer1.0-gl libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+    
+    # Install GStreamer core components
+    sudo apt install -y \
+        gstreamer1.0-tools \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-ugly \
+        gstreamer1.0-alsa \
+        gstreamer1.0-gl
+    
+    # Install GStreamer development packages
+    sudo apt install -y \
+        libgstreamer1.0-dev \
+        libgstreamer-plugins-base1.0-dev \
+        libgstreamer-plugins-good1.0-dev \
+        libgstreamer-plugins-bad1.0-dev
     
     # Install Python GStreamer bindings
-    sudo apt install -y python3-gi python3-gst-1.0 python3-gi-cairo
+    sudo apt install -y \
+        python3-gi \
+        python3-gi-cairo \
+        python3-gst-1.0 \
+        gir1.2-gstreamer-1.0 \
+        gir1.2-gst-plugins-base-1.0 \
+        gir1.2-gst-plugins-bad-1.0
     
-    # Verify installation
-    python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; Gst.init(None); print('GStreamer', Gst.version_string())" 2>/dev/null
+    echo "GStreamer installation completed."
+}
+
+# Check basic GStreamer
+python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "GStreamer Python bindings not found. Installing GStreamer components..."
+    install_gstreamer
+fi
+
+# Check GStreamer Audio specifically
+python3 -c "import gi; gi.require_version('Gst', '1.0'); gi.require_version('GstAudio', '1.0'); from gi.repository import Gst, GstAudio" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "GStreamer Audio module missing. Installing additional GStreamer components..."
+    install_gstreamer
+    
+    # Verify installation after installing
+    python3 -c "import gi; gi.require_version('Gst', '1.0'); gi.require_version('GstAudio', '1.0'); from gi.repository import Gst, GstAudio; Gst.init(None); print('GStreamer', Gst.version_string())" 2>/dev/null
     if [ $? -ne 0 ]; then
-        echo "Warning: GStreamer installation may not be complete. Audio functionality may be limited."
+        echo "WARNING: GStreamer Audio installation failed. Audio functionality will be limited."
     else
-        echo "GStreamer installed successfully."
+        echo "GStreamer Audio module installed successfully."
     fi
 else
-    echo "GStreamer is already installed."
+    echo "GStreamer Audio module is already installed."
 fi
 
 # Install Python requirements using apt where possible
@@ -91,6 +125,22 @@ sudo apt install -y python3-pip python3-numpy python3-serial python3-opencv
 
 # For packages not available via apt, use pip with requirements file
 pip3 install -r requirements.txt 2>/dev/null || echo "Some pip packages may not have installed. This is okay if they're available via apt."
+
+# Fix Openbox menu error
+if command_exists openbox; then
+    echo "Creating default Openbox menu to avoid error messages..."
+    sudo mkdir -p /var/lib/openbox
+    if [ ! -f "/var/lib/openbox/debian-menu.xml" ]; then
+        echo '<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu>
+<menu id="root-menu" label="Openbox 3">
+  <item label="Terminal"><action name="Execute"><command>x-terminal-emulator</command></action></item>
+  <item label="Reconfigure"><action name="Reconfigure"/></item>
+  <item label="Exit"><action name="Exit"/></item>
+</menu>
+</openbox_menu>' | sudo tee /var/lib/openbox/debian-menu.xml > /dev/null
+    fi
+fi
 
 # Check if Arduino is connected
 if [ ! -e "/dev/ttyACM0" ]; then
@@ -107,11 +157,25 @@ fi
 if [ $DISABLE_AUDIO -eq 0 ]; then
     echo "Setting up audio devices..."
     
+    # Make sure ALSA and PulseAudio are properly installed
+    sudo apt install -y alsa-utils pulseaudio
+    
+    # Restart ALSA to ensure audio devices are properly recognized
+    echo "Restarting ALSA sound system..."
+    sudo alsa force-reload || true
+    sleep 1
+    
     # List available audio devices using GStreamer
     echo "GStreamer audio devices:"
     gst-device-monitor-1.0 Audio/Source || true
     echo "GStreamer audio output devices:"
     gst-device-monitor-1.0 Audio/Sink || true
+    
+    # Also list ALSA devices 
+    echo "ALSA input devices:"
+    arecord -l || true
+    echo "ALSA output devices:"
+    aplay -l || true
     
     # Unmute all audio devices
     if command_exists amixer; then
@@ -140,9 +204,6 @@ if [ $DISABLE_AUDIO -eq 0 ]; then
         pactl set-source-volume @DEFAULT_SOURCE@ 80% >/dev/null 2>&1 || true
         pactl set-source-mute @DEFAULT_SOURCE@ 0 >/dev/null 2>&1 || true
     fi
-    
-    # Restart ALSA if needed to ensure audio devices are properly recognized
-    sudo alsa force-reload >/dev/null 2>&1 || true
     
     echo "Audio setup complete"
 fi
@@ -228,39 +289,6 @@ if [ $DISABLE_VIDEO -eq 0 ]; then
     fi
 fi
 
-# Set up audio settings if audio is enabled
-if [ $DISABLE_AUDIO -eq 0 ]; then
-    echo "Setting up audio devices..."
-    
-    # Unmute all audio devices
-    if command_exists amixer; then
-        # Try to unmute master volume
-        amixer sset Master unmute >/dev/null 2>&1 || true
-        amixer sset Master 80% >/dev/null 2>&1 || true
-        
-        # Try to unmute any capture devices
-        amixer sset Capture unmute >/dev/null 2>&1 || true
-        amixer sset Capture 80% >/dev/null 2>&1 || true
-        
-        # Try to set TX 96Khz audio device unmuted if available
-        amixer -c 3 sset 'Speaker' unmute >/dev/null 2>&1 || true
-        amixer -c 3 sset 'Speaker' 80% >/dev/null 2>&1 || true
-        amixer -c 3 sset 'Mic' unmute >/dev/null 2>&1 || true
-        amixer -c 3 sset 'Mic' 80% >/dev/null 2>&1 || true
-    fi
-    
-    # Set PulseAudio volume levels if PulseAudio is running
-    if command_exists pactl; then
-        # Try to set default sink volume
-        pactl set-sink-volume @DEFAULT_SINK@ 80% >/dev/null 2>&1 || true
-        pactl set-sink-mute @DEFAULT_SINK@ 0 >/dev/null 2>&1 || true
-        
-        # Try to set default source volume
-        pactl set-source-volume @DEFAULT_SOURCE@ 80% >/dev/null 2>&1 || true
-        pactl set-source-mute @DEFAULT_SOURCE@ 0 >/dev/null 2>&1 || true
-    fi
-fi
-
 # Set OpenCV performance optimization variables
 export OPENCV_VIDEOIO_PRIORITY_MSMF=0       # Disable Microsoft Media Foundation
 export OPENCV_VIDEOIO_PRIORITY_INTEL_MFX=0  # Disable Intel Media SDK
@@ -269,6 +297,9 @@ export OPENCV_FFMPEG_LOGLEVEL=0             # Disable FFMPEG logging
 # Set GStreamer debug level (uncomment to enable debugging)
 # export GST_DEBUG=3
 # export GST_DEBUG_FILE=gstreamer_debug.log
+
+# Initialize GStreamer in Python before launching the application
+python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; Gst.init(None)" 2>/dev/null || echo "Warning: Failed to initialize GStreamer"
 
 # Start the application with appropriate arguments
 echo "Starting Dans le Blanc des Yeux..."
