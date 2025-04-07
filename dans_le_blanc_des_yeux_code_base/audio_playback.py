@@ -168,30 +168,29 @@ class AudioPlayback:
             # Get the UDP port from audio_streamer instance
             port = self.audio_streamer.AUDIO_PORT
             
-            # Basic pipeline that plays audio from UDP source
+            # Modified pipeline with proper format parsing
             pipeline_str = (
                 f"udpsrc port={port} ! "
-                "application/x-udp ! "
+                "application/octet-stream ! "  # Generic binary data
                 "queue max-size-bytes=65536 ! "
+                # Use rawaudioparse to interpret the data properly
+                "rawaudioparse format=S16LE channels=2 rate=44100 ! "
                 "audioconvert ! audioresample ! "
-                "audio/x-raw, format=S16LE, channels=2 ! "
             )
             
             # Add channel muting based on state
             if self.playback_state == "mute_left":
-                # Simple and reliable approach - hardcode to 0.0 for total mute of left channel
                 pipeline_str += (
                     "audioconvert ! "
-                    "audiopanorama panorama=1.0 ! "  # Move all sound to right channel
+                    "audiopanorama panorama=1.0 ! "
                 )
             elif self.playback_state == "mute_right":
-                # Simple and reliable approach - hardcode to 1.0 for total mute of right channel
                 pipeline_str += (
                     "audioconvert ! "
-                    "audiopanorama panorama=-1.0 ! "  # Move all sound to left channel
+                    "audiopanorama panorama=-1.0 ! "
                 )
             
-            # Add sink - use pulsesink to avoid ALSA device conflicts
+            # Add sink
             pipeline_str += "pulsesink sync=false"
             
             print(f"Creating playback pipeline: {pipeline_str}")
