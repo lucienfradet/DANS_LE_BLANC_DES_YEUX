@@ -184,12 +184,12 @@ class AudioPlayback:
             if self.playback_state == "mute_left":
                 pipeline_str += (
                     "audioconvert ! "
-                    "audiopanorama panorama=1.0 ! "  # Move all sound to right channel
+                    "audiopanorama method=simple panorama=1.0 ! "  # Move all sound to right channel
                 )
             elif self.playback_state == "mute_right":
                 pipeline_str += (
                     "audioconvert ! "
-                    "audiopanorama panorama=-1.0 ! "  # Move all sound to left channel
+                    "audiopanorama method=simple panorama=-1.0 ! "  # Move all sound to left channel
                 )
             
             # Add sink
