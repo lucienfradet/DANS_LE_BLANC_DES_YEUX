@@ -111,51 +111,75 @@ class AudioStreamer:
             print("Using default audio device names")
     
     def _find_audio_devices(self):
-        """Find audio devices and map names to IDs for more reliable access."""
+        """Find audio devices using pactl command-line tool for direct PulseAudio access."""
         self.personal_mic_id = None
         self.global_mic_id = None
         
         try:
-            # Create a temporary pipeline to enumerate devices
-            device_list_pipeline = Gst.parse_launch("pulsesrc name=source ! fakesink")
-            source = device_list_pipeline.get_by_name("source")
+            # Use pactl to list sources
+            import subprocess
+            result = subprocess.run(['pactl', 'list', 'sources'], 
+                                   stdout=subprocess.PIPE, 
+                                   stderr=subprocess.PIPE, 
+                                   text=True)
             
-            # Get the device property from element
-            device_prop = source.get_property("device")
+            if result.returncode != 0:
+                raise Exception(f"pactl command failed: {result.stderr}")
             
-            # Get the PulseAudio device enumeration
-            device_list_pipeline.set_state(Gst.State.READY)
+            output = result.stdout
             
-            # Get available devices
-            device_provider = source.get_property("device-provider")
-            if device_provider:
-                devices = device_provider.get_devices()
+            # Parse the output to find devices
+            current_device = None
+            current_name = None
+            devices = []
+            
+            for line in output.split('\n'):
+                line = line.strip()
                 
-                print(f"Found {len(devices)} audio input devices:")
-                for device in devices:
-                    device_name = device.get_display_name()
-                    device_id = device.get_properties().get_string("device.id")
+                # New source entry
+                if line.startswith('Source #'):
+                    # Save previous device if we found one
+                    if current_device and current_name:
+                        devices.append((current_device, current_name))
                     
-                    print(f"  - {device_name} (ID: {device_id})")
+                    # Extract source number
+                    current_device = line.split('#')[1].strip()
+                    current_name = None
                     
-                    # Check if it matches our target devices
-                    if self.personal_mic_name.lower() in device_name.lower():
-                        self.personal_mic_id = device_id
-                        print(f"    → Matched as personal mic")
+                # Get the device name
+                elif line.startswith('Name:'):
+                    current_name = line.split(':', 1)[1].strip()
                     
-                    if self.global_mic_name.lower() in device_name.lower():
-                        self.global_mic_id = device_id
-                        print(f"    → Matched as global mic")
+                # Also look for description as backup
+                elif line.startswith('Description:'):
+                    description = line.split(':', 1)[1].strip()
+                    # Store the description with the current device
+                    if current_device:
+                        devices.append((current_device, description))
             
-            # Clean up
-            device_list_pipeline.set_state(Gst.State.NULL)
+            # Add last device if we found one
+            if current_device and current_name:
+                devices.append((current_device, current_name))
+            
+            print(f"Found {len(devices)} audio input devices:")
+            for device_id, device_name in devices:
+                print(f"  - {device_name} (ID: {device_id})")
+                
+                # Check if it matches our target devices
+                if self.personal_mic_name.lower() in device_name.lower():
+                    self.personal_mic_id = device_id
+                    print(f"    → Matched as personal mic")
+                
+                if self.global_mic_name.lower() in device_name.lower():
+                    self.global_mic_id = device_id
+                    print(f"    → Matched as global mic")
             
             # Check if we found our devices
             if not self.personal_mic_id:
                 print(f"WARNING: Could not find personal mic '{self.personal_mic_name}'")
             if not self.global_mic_id:
                 print(f"WARNING: Could not find global mic '{self.global_mic_name}'")
-            
+                
         except Exception as e:
             print(f"Error discovering audio devices: {e}")
             print("Using device names as fallback")
@@ -265,8 +289,12 @@ class AudioStreamer:
     def _create_pipeline_str(self, mic_type: str) -> str:
         """Create a pipeline string for the specified mic type using device IDs when available."""
         if mic_type == "personal":
-            # Use device ID if available, otherwise fall back to name
-            device_param = f'device-id="{self.personal_mic_id}"' if self.personal_mic_id else f'device="{self.personal_mic_name}"'
+            # For PulseAudio, we can use the device number directly
+            if self.personal_mic_id:
+                device_param = f'device={self.personal_mic_id}'
+            else:
+                device_param = f'device="{self.personal_mic_name}"'
+                
             return (
                 f'pulsesrc {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
@@ -275,7 +303,11 @@ class AudioStreamer:
                 'appsink name=sink emit-signals=true sync=false'
             )
         else:  # global
-            device_param = f'device-id="{self.global_mic_id}"' if self.global_mic_id else f'device="{self.global_mic_name}"'
+            if self.global_mic_id:
+                device_param = f'device={self.global_mic_id}'
+            else:
+                device_param = f'device="{self.global_mic_name}"'
+                
             return (
                 f'pulsesrc {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
