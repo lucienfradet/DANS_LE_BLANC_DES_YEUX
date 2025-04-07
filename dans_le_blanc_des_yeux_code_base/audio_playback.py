@@ -57,6 +57,7 @@ class AudioPlayback:
         
         # The actual playing pipeline
         self.pipeline = None
+        self.app_source = None  # Add this for appsrc
         
         # Register for audio callbacks (needed for compatibility)
         self.audio_streamer.register_personal_mic_callback(self._on_received_audio)
@@ -151,30 +152,31 @@ class AudioPlayback:
     
     def _on_received_audio(self, data: bytes) -> None:
         """Handle received audio data (callback from audio_streamer)."""
-        # We don't need to do anything here as audio is handled by UDP directly
-        pass
+        # Only process if we're playing and pipeline exists
+        if self.playback_state != "none" and self.pipeline and self.app_source:
+            # The data is already clean (header removed by audio_streamer._receiver_loop)
+            try:
+                # Create a GStreamer buffer
+                buffer = Gst.Buffer.new_wrapped(data)
+                # Push to pipeline
+                self.app_source.emit("push-buffer", buffer)
+                except Exception as e:
+                print(f"Error pushing audio buffer: {e}")
     
     def _create_playback_pipeline(self) -> Optional[Gst.Pipeline]:
-        """Create a simple playback pipeline with channel muting."""
+        """Create a playback pipeline using appsrc for clean audio data."""
         try:
             # Create a unique pipeline name based on current time
             pipeline_name = f"playback_{int(time.time())}"
             
-            # We'll create different pipelines based on the playback state
             if self.playback_state == "none":
-                # No playback needed
                 return None
             
-            # Get the UDP port from audio_streamer instance
-            port = self.audio_streamer.AUDIO_PORT
-            
-            # Modified pipeline with proper format parsing
+            # Create pipeline with appsrc
             pipeline_str = (
-                f"udpsrc port={port} ! "
-                "application/octet-stream ! "  # Generic binary data
+                "appsrc name=audio_source format=time is-live=true do-timestamp=true ! "
+                "audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! "
                 "queue max-size-bytes=65536 ! "
-                # Use rawaudioparse to interpret the data properly
-                "rawaudioparse format=S16LE channels=2 rate=44100 ! "
                 "audioconvert ! audioresample ! "
             )
             
@@ -182,12 +184,12 @@ class AudioPlayback:
             if self.playback_state == "mute_left":
                 pipeline_str += (
                     "audioconvert ! "
-                    "audiopanorama panorama=1.0 ! "
+                    "audiopanorama panorama=1.0 ! "  # Move all sound to right channel
                 )
             elif self.playback_state == "mute_right":
                 pipeline_str += (
                     "audioconvert ! "
-                    "audiopanorama panorama=-1.0 ! "
+                    "audiopanorama panorama=-1.0 ! "  # Move all sound to left channel
                 )
             
             # Add sink
@@ -199,10 +201,21 @@ class AudioPlayback:
             pipeline = Gst.parse_launch(pipeline_str)
             pipeline.set_name(pipeline_name)
             
+            # Get the appsrc element
+            self.app_source = pipeline.get_by_name("audio_source")
+            # Configure the appsrc properties
+            self.app_source.set_property("caps", Gst.Caps.from_string(
+                "audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved"
+            ))
+            self.app_source.set_property("format", Gst.Format.TIME)
+            # Set to streaming mode (push-mode)
+            self.app_source.set_property("stream-type", 0)  # 0 = GST_APP_STREAM_TYPE_STREAM
+            
             return pipeline
             
         except Exception as e:
             print(f"Error creating playback pipeline: {e}")
+            self.app_source = None
             return None
     
     def _playback_loop(self) -> None:
