@@ -160,7 +160,7 @@ class AudioPlayback:
                 buffer = Gst.Buffer.new_wrapped(data)
                 # Push to pipeline
                 self.app_source.emit("push-buffer", buffer)
-                except Exception as e:
+            except Exception as e:
                 print(f"Error pushing audio buffer: {e}")
     
     def _create_playback_pipeline(self) -> Optional[Gst.Pipeline]:
