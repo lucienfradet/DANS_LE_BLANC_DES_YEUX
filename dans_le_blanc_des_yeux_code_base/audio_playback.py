@@ -1,4 +1,24 @@
 """
+Audio playback module for the Dans le Blanc des Yeux installation using GStreamer.
+Handles playing audio with channel muting based on system state.
+
+playback logic:
+1. When both have pressure:
+   - Play with LEFT channel muted
+   - Send personal mic (TX) to remote
+
+2. When remote has pressure and local doesn't:
+   - Play with RIGHT channel muted
+   - Send global mic (USB) to remote
+
+3. When local has pressure and remote doesn't:
+   - Play with LEFT channel muted
+   - Send personal mic (TX) to remote
+
+4. When neither has pressure: No playback
+"""
+
+"""
 Minimal audio playback module for the Dans le Blanc des Yeux installation.
 Uses direct GStreamer pipeline with NO GLib main loop to avoid X11/OpenCV conflicts.
 """
@@ -145,9 +165,12 @@ class AudioPlayback:
                 # No playback needed
                 return None
             
+            # Get the UDP port from audio_streamer instance
+            port = self.audio_streamer.AUDIO_PORT
+            
             # Basic pipeline that plays audio from UDP source
             pipeline_str = (
-                f"udpsrc port={self.audio_streamer.AUDIO_PORT} ! "
+                f"udpsrc port={port} ! "
                 "application/x-udp ! "
                 "queue max-size-bytes=65536 ! "
                 "audioconvert ! audioresample ! "
@@ -156,16 +179,16 @@ class AudioPlayback:
             
             # Add channel muting based on state
             if self.playback_state == "mute_left":
-                # Use simple audio manipulation to mute left channel
+                # Simple and reliable approach - hardcode to 0.0 for total mute of left channel
                 pipeline_str += (
                     "audioconvert ! "
-                    "audiopanorama panorama=-1.0 ! "  # Move all sound to right channel
+                    "audiopanorama panorama=1.0 ! "  # Move all sound to right channel
                 )
             elif self.playback_state == "mute_right":
-                # Use simple audio manipulation to mute right channel
+                # Simple and reliable approach - hardcode to 1.0 for total mute of right channel
                 pipeline_str += (
                     "audioconvert ! "
-                    "audiopanorama panorama=1.0 ! "  # Move all sound to left channel
+                    "audiopanorama panorama=-1.0 ! "  # Move all sound to left channel
                 )
             
             # Add sink - use pulsesink to avoid ALSA device conflicts

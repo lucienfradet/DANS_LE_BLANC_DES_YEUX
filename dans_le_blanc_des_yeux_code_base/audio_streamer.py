@@ -1,4 +1,21 @@
 """
+Audio streaming module for the Dans le Blanc des Yeux installation using GStreamer.
+Handles capturing and sending audio streams between devices using GStreamer pipelines.
+
+streaming logic:
+1. When both have pressure:
+   - Stream personal mic (TX) to remote device
+   
+2. When remote has pressure and local doesn't:
+   - Stream global mic (USB) to remote device
+   
+3. When local has pressure and remote doesn't:
+   - Stream personal mic (TX) to remote device
+   
+4. When neither has pressure: No streaming
+"""
+
+"""
 Minimal audio streaming module for the Dans le Blanc des Yeux installation.
 Uses direct GStreamer pipeline with NO GLib main loop to avoid X11/OpenCV conflicts.
 """
@@ -31,6 +48,9 @@ class AudioStreamer:
     
     def __init__(self, remote_ip: str):
         self.remote_ip = remote_ip
+        
+        # Make AUDIO_PORT accessible as an instance variable for AudioPlayback to reference
+        self.AUDIO_PORT = AUDIO_PORT
         
         # Audio device names (will be loaded from config)
         self.personal_mic_name = "TX 96Khz"
@@ -147,10 +167,16 @@ class AudioStreamer:
         
         # Close sockets
         if self.send_socket:
-            self.send_socket.close()
+            try:
+                self.send_socket.close()
+            except:
+                pass
         
         if self.receive_socket:
-            self.receive_socket.close()
+            try:
+                self.receive_socket.close()
+            except:
+                pass
         
         print("Audio streamer stopped")
     
@@ -270,8 +296,19 @@ class AudioStreamer:
             
             while self.running and self.current_mic_sending == mic_type:
                 try:
-                    # Pull a sample from the sink
-                    sample = sink.try_pull_sample(Gst.SECOND * 0.1)
+                    # Pull a sample from the sink - using standard pull_sample
+                    # with a timeout implemented using a separate check
+                    sample = None
+                    start_time = time.time()
+                    timeout = 0.1  # 100ms timeout
+                    
+                    while time.time() - start_time < timeout:
+                        # Non-blocking check if sample is available
+                        sample = sink.emit("pull-sample")
+                        if sample:
+                            break
+                        time.sleep(0.01)  # Small sleep to avoid busy wait
+                    
                     if not sample:
                         continue
                     
@@ -291,7 +328,8 @@ class AudioStreamer:
                         packet = seq_num.to_bytes(4, byteorder='big') + mic_id_byte + audio_data
                         
                         # Send to remote
-                        self.send_socket.sendto(packet, (self.remote_ip, AUDIO_PORT))
+                        if self.send_socket:
+                            self.send_socket.sendto(packet, (self.remote_ip, AUDIO_PORT))
                         
                         seq_num = (seq_num + 1) % 65536
                     
@@ -310,15 +348,17 @@ class AudioStreamer:
     
     def _stop_streaming(self) -> None:
         """Stop all active streaming."""
+        old_mic = self.current_mic_sending
         self.current_mic_sending = None
+        
+        if old_mic:
+            print("All streams stopped")
         
         # Update system state
         system_state.update_audio_state({
             "audio_sending": False,
             "audio_mic": "None"
         })
-        
-        print("All audio streams stopped")
     
     def _receiver_loop(self) -> None:
         """Receive audio from remote device."""
