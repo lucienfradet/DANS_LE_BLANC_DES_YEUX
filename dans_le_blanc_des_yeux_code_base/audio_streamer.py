@@ -22,7 +22,7 @@ import socket
 import configparser
 from typing import Dict, Optional, Tuple, List, Callable, Any
 
-# Import GStreamer with thread safety modifications
+# Import GStreamer
 import gi
 gi.require_version('Gst', '1.0')
 gi.require_version('GstAudio', '1.0')
@@ -30,7 +30,7 @@ from gi.repository import Gst, GstAudio, GLib
 
 from system_state import system_state
 
-# Initialize GStreamer - MAIN THREAD ONLY
+# Initialize GStreamer
 Gst.init(None)
 
 # Audio configuration
@@ -62,12 +62,9 @@ class AudioStreamer:
         self.global_pipeline = None
         self.receiver_pipeline = None
         
-        # GLib main loop for GStreamer - IMPORTANT: Created but NOT started in __init__
+        # GLib main loop for GStreamer
         self.loop = GLib.MainLoop()
         self.loop_thread = None
-        
-        # Flag to ensure GLib main loop is only started once
-        self.glib_loop_started = False
         
         # Streaming state
         self.current_mic_sending = None  # "personal" or "global" or None
@@ -76,6 +73,9 @@ class AudioStreamer:
         self.running = False
         self.threads = []
         self.lock = threading.Lock()
+        
+        # Device monitoring
+        self.device_monitor_thread = None
         
         # Retry counters
         self.personal_mic_retries = 0
@@ -162,7 +162,7 @@ class AudioStreamer:
             print("\nAudio devices available:")
             for i, device in enumerate(devices):
                 properties = device.get_properties()
-                device_class = properties.get_string("device.class") if properties.contains("device.class") else "unknown"
+                device_class = properties.get_string("device.class") if properties.has_field("device.class") else "unknown"
                 
                 # Get the display name and ALSA device path
                 display_name = device.get_display_name()
@@ -170,7 +170,7 @@ class AudioStreamer:
                 
                 # Try different property names for the ALSA device path
                 for prop_name in ["device.path", "alsa.device", "alsa.name"]:
-                    if properties.contains(prop_name):
+                    if properties.has_field(prop_name):
                         alsa_path = properties.get_string(prop_name)
                         if alsa_path:
                             break
@@ -196,7 +196,7 @@ class AudioStreamer:
                     if "USB Audio" in display_name and self.personal_mic_name not in display_name:
                         properties = device.get_properties()
                         for prop_name in ["device.path", "alsa.device", "alsa.name"]:
-                            if properties.contains(prop_name):
+                            if properties.has_field(prop_name):
                                 alsa_path = properties.get_string(prop_name)
                                 if alsa_path:
                                     self.global_mic_alsa_device = alsa_path
@@ -227,6 +227,12 @@ class AudioStreamer:
                 self.personal_mic_retries = 0
             if self.global_mic_alsa_device is not None:
                 self.global_mic_retries = 0
+            
+            # Check if devices have changed, which may require pipeline restart
+            if (old_personal_device != self.personal_mic_alsa_device or 
+                old_global_device != self.global_mic_alsa_device):
+                print("Audio devices have changed, updating pipelines...")
+                self._update_streaming_based_on_state()
                 
         except Exception as e:
             print(f"Error finding audio devices: {e}")
@@ -234,18 +240,22 @@ class AudioStreamer:
     def start(self) -> bool:
         """Start the audio streaming system."""
         print("Starting audio streamer...")
+        self.running = True
         
         # Find audio devices first
         self._find_audio_devices()
         
-        # Start GLib main loop in a separate thread - only if not already running
-        if not self.glib_loop_started:
-            self.running = True
-            self.loop_thread = threading.Thread(target=self._run_glib_loop)
-            self.loop_thread.daemon = True
-            self.loop_thread.start()
-            self.threads.append(self.loop_thread)
-            self.glib_loop_started = True
+        # Start GLib main loop in a separate thread
+        self.loop_thread = threading.Thread(target=self._run_glib_loop)
+        self.loop_thread.daemon = True
+        self.loop_thread.start()
+        self.threads.append(self.loop_thread)
+        
+        # Start device monitor thread
+        # self.device_monitor_thread = threading.Thread(target=self._device_monitor_loop)
+        # self.device_monitor_thread.daemon = True
+        # self.device_monitor_thread.start()
+        # self.threads.append(self.device_monitor_thread)
         
         # Start receiver pipeline
         self._start_receiver()
@@ -273,16 +283,13 @@ class AudioStreamer:
         print("Stopping audio streamer...")
         self.running = False
         
-        # Stop all pipelines with proper cleanup in the correct order
+        # Stop all pipelines with proper cleanup
         self._stop_streaming()
         self._stop_receiver()
         
         # Stop the GLib main loop
         if self.loop and self.loop.is_running():
-            # Use idle_add to safely stop the loop from any thread
-            GLib.idle_add(self.loop.quit)
-            # Wait a moment for the loop to actually quit
-            time.sleep(0.5)
+            self.loop.quit()
         
         # Wait for threads to finish
         for thread in self.threads:
@@ -302,11 +309,7 @@ class AudioStreamer:
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
         if changed_state in ["local", "remote"]:
-            # Use the GLib main thread to update streaming state
-            if self.loop and self.loop.is_running():
-                GLib.idle_add(self._update_streaming_based_on_state)
-            else:
-                self._update_streaming_based_on_state()
+            self._update_streaming_based_on_state()
     
     def _update_streaming_based_on_state(self) -> None:
         """Update streaming state based on the current system state."""
@@ -333,12 +336,39 @@ class AudioStreamer:
         # Case 4: No pressure on either - no streaming
         else:
             self._stop_streaming()
-        
-        # Ensure the main loop continues if this was called via idle_add
-        return False
+    
+    # def _device_monitor_loop(self) -> None:
+    #     """Periodically check for audio devices in case they disconnect/reconnect."""
+    #     last_check_time = 0
+    #     
+    #     while self.running:
+    #         current_time = time.time()
+    #         
+    #         # Check devices periodically
+    #         if current_time - last_check_time > DEVICE_SEARCH_INTERVAL:
+    #             print("Checking audio devices...")
+    #             self._find_audio_devices()
+    #             
+    #             # If the current mic is missing, try to restart streaming
+    #             if (self.current_mic_sending == "personal" and not self.personal_mic_alsa_device) or \
+    #                (self.current_mic_sending == "global" and not self.global_mic_alsa_device):
+    #                 print(f"Current microphone ({self.current_mic_sending}) is missing, restarting streaming")
+    #                 self._update_streaming_based_on_state()
+    #             
+    #             last_check_time = current_time
+    #         
+    #         # Sleep to avoid consuming CPU
+    #         time.sleep(5)
     
     def _create_sender_pipeline(self, mic_type: str) -> Optional[Gst.Pipeline]:
-        """Create a GStreamer pipeline for sending audio from the specified mic."""
+        """Create a GStreamer pipeline for sending audio from the specified mic.
+        
+        Args:
+            mic_type: Either "personal" for TX mic or "global" for USB mic
+        
+        Returns:
+            The created GStreamer pipeline or None if failed
+        """
         try:
             if mic_type == "personal":
                 if not self.personal_mic_alsa_device:
@@ -355,7 +385,6 @@ class AudioStreamer:
                         return None
                 
                 device = self.personal_mic_alsa_device
-                mic_name = self.personal_mic_name
             else:  # global
                 if not self.global_mic_alsa_device:
                     print(f"Global mic not available, retrying...")
@@ -371,12 +400,11 @@ class AudioStreamer:
                         return None
                 
                 device = self.global_mic_alsa_device
-                mic_name = self.global_mic_name
             
             # Create a unique pipeline name
             pipeline_name = f"{mic_type}_pipeline_{int(time.time())}"
             
-            # Create a sender pipeline using alsasrc and appsink
+            # Create a sender pipeline using alsasrc and udpsink
             # We'll use device= for the ALSA device if it's a direct path
             device_spec = f"device=\"{device}\"" if device.startswith("/") else f"device={device}"
             
@@ -486,7 +514,11 @@ class AudioStreamer:
             print(f"Error sending audio packet: {e}")
     
     def _create_receiver_pipeline(self) -> Optional[Gst.Pipeline]:
-        """Create a GStreamer pipeline for receiving audio."""
+        """Create a GStreamer pipeline for receiving audio.
+        
+        Returns:
+            The created GStreamer pipeline or None if failed
+        """
         try:
             # Create a unique pipeline name
             pipeline_name = f"receiver_pipeline_{int(time.time())}"
@@ -543,18 +575,11 @@ class AudioStreamer:
                         # Rest of the packet contains the audio data
                         audio_data = packet_data[5:]
                         
-                        # Call appropriate callback based on mic type in a safe way
+                        # Call appropriate callback based on mic type
                         if mic_type_byte == b'\x00' and self.on_personal_mic_received:
-                            # Don't block the GStreamer thread
-                            threading.Thread(
-                                target=self.on_personal_mic_received, 
-                                args=(audio_data,)
-                            ).start()
+                            self.on_personal_mic_received(audio_data)
                         elif mic_type_byte == b'\x01' and self.on_global_mic_received:
-                            threading.Thread(
-                                target=self.on_global_mic_received, 
-                                args=(audio_data,)
-                            ).start()
+                            self.on_global_mic_received(audio_data)
                 
                 except Exception as e:
                     print(f"Error processing received audio: {e}")
@@ -569,56 +594,33 @@ class AudioStreamer:
         print(f"Error in {pipeline_type} pipeline: {err.message}")
         print(f"Debug info: {debug}")
         
-        # Handle errors with retries using idle_add for thread safety
+        # Handle errors with retries
         if pipeline_type == "personal":
             if self.personal_mic_retries < MAX_RETRY_ATTEMPTS:
                 print(f"Retrying personal mic pipeline in {RETRY_DELAY} seconds...")
                 self.personal_mic_retries += 1
-                GLib.timeout_add_seconds(RETRY_DELAY, self._restart_personal_pipeline_safe)
+                threading.Timer(RETRY_DELAY, self._restart_personal_pipeline).start()
             else:
                 print("Max retries reached for personal mic pipeline")
-                GLib.idle_add(self._stop_personal_pipeline)
+                self._stop_personal_pipeline()
                 
         elif pipeline_type == "global":
             if self.global_mic_retries < MAX_RETRY_ATTEMPTS:
                 print(f"Retrying global mic pipeline in {RETRY_DELAY} seconds...")
                 self.global_mic_retries += 1
-                GLib.timeout_add_seconds(RETRY_DELAY, self._restart_global_pipeline_safe)
+                threading.Timer(RETRY_DELAY, self._restart_global_pipeline).start()
             else:
                 print("Max retries reached for global mic pipeline")
-                GLib.idle_add(self._stop_global_pipeline)
+                self._stop_global_pipeline()
                 
         elif pipeline_type == "receiver":
             if self.receive_retries < MAX_RETRY_ATTEMPTS:
                 print(f"Retrying receiver pipeline in {RETRY_DELAY} seconds...")
                 self.receive_retries += 1
-                GLib.timeout_add_seconds(RETRY_DELAY, self._restart_receiver_safe)
+                threading.Timer(RETRY_DELAY, self._restart_receiver).start()
             else:
                 print("Max retries reached for receiver pipeline")
-                GLib.idle_add(self._stop_receiver)
-    
-    def _restart_personal_pipeline_safe(self):
-        """Thread-safe version of pipeline restart."""
-        self._stop_personal_pipeline()
-        time.sleep(0.5)  # Brief pause before restart
-        if self.current_mic_sending == "personal":
-            self._start_streaming("personal")
-        return False  # Don't repeat the timeout
-    
-    def _restart_global_pipeline_safe(self):
-        """Thread-safe version of pipeline restart."""
-        self._stop_global_pipeline()
-        time.sleep(0.5)  # Brief pause before restart
-        if self.current_mic_sending == "global":
-            self._start_streaming("global")
-        return False  # Don't repeat the timeout
-    
-    def _restart_receiver_safe(self):
-        """Thread-safe version of receiver restart."""
-        self._stop_receiver()
-        time.sleep(0.5)  # Brief pause before restart
-        self._start_receiver()
-        return False  # Don't repeat the timeout
+                self._stop_receiver()
     
     def _on_pipeline_warning(self, bus, message, pipeline_type):
         """Handle pipeline warnings."""
@@ -630,16 +632,20 @@ class AudioStreamer:
         """Handle pipeline end-of-stream."""
         print(f"End of stream in {pipeline_type} pipeline")
         
-        # Restart pipelines on EOS using idle_add for thread safety
+        # Restart pipelines on EOS
         if pipeline_type == "personal" and self.current_mic_sending == "personal":
-            GLib.idle_add(self._restart_personal_pipeline_safe)
+            self._restart_personal_pipeline()
         elif pipeline_type == "global" and self.current_mic_sending == "global":
-            GLib.idle_add(self._restart_global_pipeline_safe)
+            self._restart_global_pipeline()
         elif pipeline_type == "receiver":
-            GLib.idle_add(self._restart_receiver_safe)
+            self._restart_receiver()
     
     def _start_streaming(self, mic_type: str) -> bool:
-        """Start streaming from specified mic to remote device."""
+        """Start streaming from specified mic to remote device.
+        
+        Args:
+            mic_type: Either "personal" for TX mic or "global" for USB mic
+        """
         # If already streaming the correct mic, do nothing
         if self.current_mic_sending == mic_type:
             return True
@@ -682,12 +688,6 @@ class AudioStreamer:
                 self.current_mic_sending = "global"
                 print(f"Started {self.global_mic_name} stream to {self.remote_ip}:{AUDIO_PORT}")
             
-            # Update system state with audio info
-            system_state.update_audio_state({
-                "audio_sending": True,
-                "audio_mic": mic_type
-            })
-            
             return True
             
         except Exception as e:
@@ -700,13 +700,6 @@ class AudioStreamer:
         self._stop_personal_pipeline()
         self._stop_global_pipeline()
         self.current_mic_sending = None
-        
-        # Update system state
-        system_state.update_audio_state({
-            "audio_sending": False,
-            "audio_mic": "None"
-        })
-        
         print("All audio streams stopped")
     
     def _stop_personal_pipeline(self) -> None:
@@ -732,6 +725,20 @@ class AudioStreamer:
                 print("Global mic pipeline stopped")
             except Exception as e:
                 print(f"Error stopping global mic pipeline: {e}")
+    
+    def _restart_personal_pipeline(self) -> None:
+        """Restart the personal mic pipeline."""
+        if self.current_mic_sending == "personal":
+            self._stop_personal_pipeline()
+            time.sleep(RETRY_DELAY)  # Wait before restarting
+            self._start_streaming("personal")
+    
+    def _restart_global_pipeline(self) -> None:
+        """Restart the global mic pipeline."""
+        if self.current_mic_sending == "global":
+            self._stop_global_pipeline()
+            time.sleep(RETRY_DELAY)  # Wait before restarting
+            self._start_streaming("global")
     
     def _start_receiver(self) -> bool:
         """Start the audio receiver pipeline."""
@@ -770,3 +777,62 @@ class AudioStreamer:
                 print("Receiver pipeline stopped")
             except Exception as e:
                 print(f"Error stopping receiver pipeline: {e}")
+    
+    def _restart_receiver(self) -> None:
+        """Restart the audio receiver pipeline."""
+        self._stop_receiver()
+        time.sleep(RETRY_DELAY)  # Wait before restarting
+        self._start_receiver()
+
+
+# Test function to run the audio streamer standalone
+def test_audio_streamer():
+    """Test the audio streamer with loopback."""
+    
+    # Set up system state for testing
+    system_state.update_local_state({"pressure": False})
+    system_state.update_remote_state({"pressure": True, "connected": True})
+    
+    # Initialize audio streamer with loopback address for testing
+    audio_streamer = AudioStreamer("127.0.0.1")
+    
+    # Register callbacks for received audio
+    def on_personal_mic_audio(data):
+        print(f"Received personal mic audio: {len(data)} bytes")
+    
+    def on_global_mic_audio(data):
+        print(f"Received global mic audio: {len(data)} bytes")
+    
+    audio_streamer.register_personal_mic_callback(on_personal_mic_audio)
+    audio_streamer.register_global_mic_callback(on_global_mic_audio)
+    
+    audio_streamer.start()
+    
+    try:
+        print("\nTesting different pressure states:")
+        print("\n1. Remote pressure, local no pressure - Streaming GLOBAL mic")
+        time.sleep(5)
+        
+        print("\n2. Both have pressure - Streaming PERSONAL mic")
+        system_state.update_local_state({"pressure": True})
+        time.sleep(5)
+        
+        print("\n3. Local pressure, remote no pressure - Streaming PERSONAL mic")
+        system_state.update_remote_state({"pressure": False})
+        time.sleep(5)
+        
+        print("\n4. Neither has pressure - No streaming")
+        system_state.update_local_state({"pressure": False})
+        time.sleep(5)
+        
+        print("\nAudio streaming test complete.")
+        
+    except KeyboardInterrupt:
+        print("Test interrupted by user")
+    finally:
+        audio_streamer.stop()
+
+
+# Run test if executed directly
+if __name__ == "__main__":
+    test_audio_streamer()

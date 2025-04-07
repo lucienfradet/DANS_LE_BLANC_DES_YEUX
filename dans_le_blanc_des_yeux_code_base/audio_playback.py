@@ -24,7 +24,7 @@ import threading
 import configparser
 from typing import Dict, Optional, Tuple, List, Callable, Any
 
-# Import GStreamer with thread safety modifications
+# Import GStreamer
 import gi
 gi.require_version('Gst', '1.0')
 gi.require_version('GstAudio', '1.0')
@@ -33,11 +33,15 @@ from gi.repository import Gst, GstAudio, GLib
 from system_state import system_state
 from audio_streamer import AudioStreamer
 
+# Initialize GStreamer
+Gst.init(None)
+
 # Audio configuration
 RATE = 44100
 CHANNELS = 2
 MAX_RETRY_ATTEMPTS = 5
 RETRY_DELAY = 2  # Seconds between retries
+DEVICE_SEARCH_INTERVAL = 30  # Seconds between device searches
 
 class AudioPlayback:
     """Handles audio playback with channel muting based on system state using GStreamer."""
@@ -60,10 +64,13 @@ class AudioPlayback:
         self.threads = []
         self.lock = threading.Lock()
         
+        # Device monitoring
+        self.device_monitor_thread = None
+        
         # Retry counter
         self.playback_retries = 0
         
-        # Register for audio callbacks
+        # Register for audio callbacks - both go to same buffer now
         self.audio_streamer.register_personal_mic_callback(self._on_received_audio)
         self.audio_streamer.register_global_mic_callback(self._on_received_audio)
         
@@ -94,7 +101,7 @@ class AudioPlayback:
             print("\nAudio output devices available:")
             for i, device in enumerate(devices):
                 properties = device.get_properties()
-                device_class = properties.get_string("device.class") if properties.contains("device.class") else "unknown"
+                device_class = properties.get_string("device.class") if properties.has_field("device.class") else "unknown"
                 
                 # Get the display name and ALSA device path
                 display_name = device.get_display_name()
@@ -102,7 +109,7 @@ class AudioPlayback:
                 
                 # Try different property names for the ALSA device path
                 for prop_name in ["device.path", "alsa.device", "alsa.name"]:
-                    if properties.contains(prop_name):
+                    if properties.has_field(prop_name):
                         alsa_path = properties.get_string(prop_name)
                         if alsa_path:
                             break
@@ -129,14 +136,14 @@ class AudioPlayback:
                     properties = device.get_properties()
                     is_default = False
                     
-                    if properties.contains("is-default"):
+                    if properties.has_field("is-default"):
                         is_default = properties.get_boolean("is-default")
                     elif "default" in device.get_display_name().lower():
                         is_default = True
                     
                     if is_default:
                         for prop_name in ["device.path", "alsa.device", "alsa.name"]:
-                            if properties.contains(prop_name):
+                            if properties.has_field(prop_name):
                                 alsa_path = properties.get_string(prop_name)
                                 if alsa_path:
                                     self.speaker_name = device.get_display_name()
@@ -151,7 +158,7 @@ class AudioPlayback:
                     device = devices[0]
                     properties = device.get_properties()
                     for prop_name in ["device.path", "alsa.device", "alsa.name"]:
-                        if properties.contains(prop_name):
+                        if properties.has_field(prop_name):
                             alsa_path = properties.get_string(prop_name)
                             if alsa_path:
                                 self.speaker_name = device.get_display_name()
@@ -166,6 +173,11 @@ class AudioPlayback:
                 # Reset retry counter if device is found
                 self.playback_retries = 0
             
+            # If the device changed, restart playback
+            if old_speaker_device != self.speaker_device and self.running:
+                print("Audio output device changed, restarting playback...")
+                self._restart_playback()
+            
         except Exception as e:
             print(f"Error finding audio output devices: {e}")
     
@@ -173,6 +185,15 @@ class AudioPlayback:
         """Start the audio playback system."""
         print("Starting audio playback...")
         self.running = True
+        
+        # # Start device monitor thread
+        # self.device_monitor_thread = threading.Thread(target=self._device_monitor_loop)
+        # self.device_monitor_thread.daemon = True
+        # self.device_monitor_thread.start()
+        # self.threads.append(self.device_monitor_thread)
+
+        # No monitoring, just initiate the damed audio source
+        self._device_monitor_loop()
         
         # Update the playback state based on current system state
         self._update_playback_state()
@@ -195,14 +216,26 @@ class AudioPlayback:
         
         print("Audio playback stopped")
     
+    def _device_monitor_loop(self) -> None:
+        """Periodically check for audio devices in case they disconnect/reconnect."""
+        last_check_time = 0
+        
+        while self.running:
+            current_time = time.time()
+            
+            # Check devices periodically
+            if current_time - last_check_time > DEVICE_SEARCH_INTERVAL:
+                print("Checking audio output devices...")
+                self._find_audio_devices()
+                last_check_time = current_time
+            
+            # Sleep to avoid consuming CPU
+            time.sleep(5)
+    
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
         if changed_state in ["local", "remote"]:
-            # Use GLib idle_add if GStreamer's main loop is running
-            if self.audio_streamer.loop and self.audio_streamer.loop.is_running():
-                GLib.idle_add(self._update_playback_state)
-            else:
-                self._update_playback_state()
+            self._update_playback_state()
     
     def _update_playback_state(self) -> None:
         """Update playback state based on the current system state."""
@@ -239,9 +272,6 @@ class AudioPlayback:
             system_state.update_audio_state({
                 "audio_muted_channel": self._get_muted_channel_info()
             })
-        
-        # Ensure the idle callback doesn't repeat
-        return False
     
     def _get_muted_channel_info(self) -> str:
         """Get human-readable information about which channel is muted."""
@@ -257,6 +287,42 @@ class AudioPlayback:
         # We don't need to do anything here with GStreamer as it's handled directly
         # by the pipelines, but we keep the callback for compatibility
         pass
+
+    def _process_header_and_forward(self, sink, playback_pipeline) -> Gst.FlowReturn:
+        """Process header and forward audio data to the playback pipeline."""
+        sample = sink.emit("pull-sample")
+        if not sample:
+            return Gst.FlowReturn.ERROR
+        
+        buffer = sample.get_buffer()
+        success, map_info = buffer.map(Gst.MapFlags.READ)
+        
+        if not success:
+            buffer.unmap(map_info)
+            return Gst.FlowReturn.ERROR
+        
+        # Get the raw data and process headers
+        packet_data = bytes(map_info.data)
+        buffer.unmap(map_info)
+        
+        if len(packet_data) <= 5:
+            print("Warning: Received packet too small to contain header and audio data")
+            return Gst.FlowReturn.OK
+        
+        # Skip the first 5 bytes (4-byte sequence + 1-byte mic type)
+        audio_data = packet_data[5:]
+        
+        # Forward to playback pipeline
+        audio_source = playback_pipeline.get_by_name("audio_source")
+        
+        # Create a new buffer for the stripped audio data
+        new_buffer = Gst.Buffer.new_allocate(None, len(audio_data), None)
+        new_buffer.fill(0, audio_data)
+        
+        # Push the buffer to the playback pipeline
+        result = audio_source.emit("push-buffer", new_buffer)
+        
+        return Gst.FlowReturn.OK
     
     def _create_playback_pipeline(self) -> Optional[Gst.Pipeline]:
         """Create a GStreamer pipeline for audio playback with channel muting."""
@@ -282,56 +348,93 @@ class AudioPlayback:
                 # No playback needed
                 return None
             
-            # Start with udpsrc for receiving audio
+            # Start with udpsrc for receiving RTP audio
+            # pipeline_str = (
+            #     f"udpsrc port={self.audio_streamer.AUDIO_PORT} ! "
+            #     "queue max-size-bytes=65536 ! "
+            #     f"application/x-rtp,media=audio,clock-rate={RATE},encoding-name=L16,channels={CHANNELS} ! "
+            #     "rtpL16depay ! "
+            #     "audioconvert ! "
+            #     "audioresample ! "
+            #     "audio/x-raw, format=S16LE, channels=2 ! "
+            # )
+
+            # Use a custom udpsrc pipeline that handles our header format
             pipeline_str = (
                 f"udpsrc port={self.audio_streamer.AUDIO_PORT} ! "
                 "queue max-size-bytes=65536 ! "
-                f"application/x-udp, encoding-name=RAW ! "
+                # Changed from RTP to custom UDP format
+                "application/x-udp, encoding-name=RAW ! "
+                # Add a custom header-stripping element
+                f"appsink name=header_sink emit-signals=true max-buffers=10 drop=true sync=false"
+            )
+
+            print(f"Creating custom header-handling pipeline: {pipeline_str}")
+            pipeline = Gst.parse_launch(pipeline_str)
+            pipeline.set_name(pipeline_name)
+            
+            # Set up a second pipeline for playback after header stripping
+            playback_str = (
+                "appsrc name=audio_source format=time is-live=true ! "
+                "audio/x-raw, format=S16LE, rate=44100, channels=2 ! "
                 "audioconvert ! "
                 "audioresample ! "
-                "audio/x-raw, format=S16LE, channels=2 ! "
             )
             
             # Add appropriate channel muting filter
             if self.playback_state == "mute_left":
-                # Use audiomixer with volume controls instead of audiochannelmix
-                pipeline_str += (
-                    "deinterleave name=d ! "
-                    "audioconvert ! audioresample ! audio/x-raw, channels=1 ! "
-                    "volume volume=0.0 ! fakesink sync=false "
-                    "d. ! audioconvert ! audioresample ! audio/x-raw, channels=1 ! "
-                    "interleave name=i ! "
+                # Use audiochannelmix to mute the left channel
+                playback_str += (
+                    "audiochannelmix in-channels=2 out-channels=2 matrix=\"{ 0.0, 0.0, 1.0, 1.0 }\" ! "
                 )
+                # pipeline_str += (
+                #     "audiochannelmix in-channels=2 out-channels=2 matrix=\"{ 0.0, 0.0, 1.0, 1.0 }\" ! "
+                # )
             elif self.playback_state == "mute_right":
-                # Use audiomixer with volume controls instead of audiochannelmix
-                pipeline_str += (
-                    "deinterleave name=d ! "
-                    "audioconvert ! audioresample ! audio/x-raw, channels=1 ! "
-                    "interleave name=i ! "
-                    "d. ! audioconvert ! audioresample ! audio/x-raw, channels=1 ! "
-                    "volume volume=0.0 ! fakesink sync=false "
+                # Use audiochannelmix to mute the right channel
+                playback_str += (
+                    "audiochannelmix in-channels=2 out-channels=2 matrix=\"{ 1.0, 1.0, 0.0, 0.0 }\" ! "
                 )
+                # pipeline_str += (
+                #     "audiochannelmix in-channels=2 out-channels=2 matrix=\"{ 1.0, 1.0, 0.0, 0.0 }\" ! "
+                # )
             
             # Add the alsasink with device specification
             # We'll use device= for the ALSA device if it's a direct path
             device_spec = f"device=\"{self.speaker_device}\"" if self.speaker_device.startswith("/") else f"device={self.speaker_device}"
             
-            pipeline_str += (
+            playback_str += (
                 f"alsasink {device_spec} sync=false buffer-time=50000"
             )
+            # pipeline_str += (
+            #     f"alsasink {device_spec} sync=false buffer-time=50000"
+            # )
             
             print(f"Creating playback pipeline: {pipeline_str}")
             
-            pipeline = Gst.parse_launch(pipeline_str)
-            pipeline.set_name(pipeline_name)
+            playback_pipeline = Gst.parse_launch(playback_str)
+            # pipeline = Gst.parse_launch(pipeline_str)
+            playback_pipeline.set_name(f"{pipeline_name}_playback")
+            # pipeline.set_name(pipeline_name)
+
+            # Set up the header processing
+            header_sink = pipeline.get_by_name("header_sink")
+            header_sink.connect("new-sample", self._process_header_and_forward, playback_pipeline)
+
+            # Start the playback pipeline
+            playback_pipeline.set_state(Gst.State.PLAYING)
             
             # Add message handlers for errors, warnings, and EOS
-            bus = pipeline.get_bus()
+            # bus = pipeline.get_bus()
+            bus = playback_pipeline.get_bus()
             bus.add_signal_watch()
             bus.connect("message::error", self._on_pipeline_error)
             bus.connect("message::warning", self._on_pipeline_warning)
             bus.connect("message::eos", self._on_pipeline_eos)
             
+            # Store both pipelines (we'll need to stop both)
+            self.playback_pipeline = [pipeline, playback_pipeline]
+
             return pipeline
             
         except Exception as e:
@@ -348,17 +451,10 @@ class AudioPlayback:
         if self.playback_retries < MAX_RETRY_ATTEMPTS:
             print(f"Retrying playback pipeline in {RETRY_DELAY} seconds...")
             self.playback_retries += 1
-            GLib.timeout_add_seconds(RETRY_DELAY, self._restart_playback_safe)
+            threading.Timer(RETRY_DELAY, self._restart_playback).start()
         else:
             print("Max retries reached for playback pipeline")
-            GLib.idle_add(self._stop_playback)
-    
-    def _restart_playback_safe(self):
-        """Thread-safe restart of playback pipeline."""
-        self._stop_playback()
-        time.sleep(0.5)  # Brief pause
-        self._start_playback()
-        return False  # Don't repeat the timeout
+            self._stop_playback()
     
     def _on_pipeline_warning(self, bus, message):
         """Handle pipeline warnings."""
@@ -371,7 +467,7 @@ class AudioPlayback:
         print(f"End of stream in playback pipeline")
         
         # Restart playback on EOS
-        GLib.idle_add(self._restart_playback_safe)
+        self._restart_playback()
     
     def _start_playback(self) -> bool:
         """Start the audio playback with current state."""
@@ -411,8 +507,12 @@ class AudioPlayback:
         """Stop the audio playback pipeline."""
         if self.playback_pipeline:
             try:
-                # Set state to NULL for clean shutdown
-                self.playback_pipeline.set_state(Gst.State.NULL)
+                # Handle both single pipeline and array of pipelines
+                if isinstance(self.playback_pipeline, list):
+                    for pipeline in self.playback_pipeline:
+                        pipeline.set_state(Gst.State.NULL)
+                else:
+                    self.playback_pipeline.set_state(Gst.State.NULL)
                 
                 # Give time for the pipeline to shut down
                 time.sleep(0.2)
@@ -424,9 +524,6 @@ class AudioPlayback:
                 print(f"Error stopping playback pipeline: {e}")
                 # Try to clear it anyway
                 self.playback_pipeline = None
-        
-        # Ensure idle callback returns False
-        return False
     
     def _restart_playback(self) -> None:
         """Restart the audio playback based on current state."""
@@ -441,3 +538,52 @@ class AudioPlayback:
             self._start_playback()
         else:
             print("No playback needed in current state")
+
+
+# Test function for the audio playback
+def test_audio_playback():
+    """Test the audio playback system."""
+    from audio_streamer import AudioStreamer
+    
+    # Set up system state for testing
+    system_state.update_local_state({"pressure": False})
+    system_state.update_remote_state({"pressure": True, "connected": True})
+    
+    # Initialize audio streamer
+    audio_streamer = AudioStreamer("127.0.0.1")
+    audio_streamer.start()
+    
+    # Initialize audio playback
+    audio_playback = AudioPlayback(audio_streamer)
+    audio_playback.start()
+    
+    try:
+        print("\nTesting different pressure states:")
+        print("\n1. Remote pressure, local no pressure - RIGHT channel muted")
+        time.sleep(5)
+        
+        print("\n2. Both have pressure - LEFT channel muted")
+        system_state.update_local_state({"pressure": True})
+        time.sleep(5)
+        
+        print("\n3. Local pressure, remote no pressure - LEFT channel muted")
+        system_state.update_remote_state({"pressure": False})
+        time.sleep(5)
+        
+        print("\n4. Neither has pressure - No playback")
+        system_state.update_local_state({"pressure": False})
+        time.sleep(5)
+        
+        print("\nAudio playback test complete.")
+        
+    except KeyboardInterrupt:
+        print("Test interrupted by user")
+    finally:
+        # Stop in the correct order: first playback, then streamer
+        audio_playback.stop()
+        audio_streamer.stop()
+
+
+# Run test if executed directly
+if __name__ == "__main__":
+    test_audio_playback()
