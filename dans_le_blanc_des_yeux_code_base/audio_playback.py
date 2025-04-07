@@ -85,19 +85,26 @@ class AudioPlayback:
         return True
     
     def stop(self) -> None:
-        """Stop the audio playback and clean up."""
+        """Stop the audio playback and clean up with improved pipeline teardown."""
         print("Stopping audio playback...")
         self.running = False
         
         # Stop playback if running
         with self.lock:
             if self.pipeline:
+                print("Stopping pipeline with proper state transitions")
+                # Proper state transitions
+                self.pipeline.set_state(Gst.State.PAUSED)
+                self.pipeline.get_state(500 * Gst.MSECOND)  # 500ms timeout
+                self.pipeline.set_state(Gst.State.READY)
+                self.pipeline.get_state(500 * Gst.MSECOND)  # 500ms timeout
                 self.pipeline.set_state(Gst.State.NULL)
                 self.pipeline = None
+                self.app_source = None
         
         # Wait for thread to finish
         if self.playback_thread and self.playback_thread.is_alive():
-            self.playback_thread.join(timeout=1.0)
+            self.playback_thread.join(timeout=2.0)  # Longer timeout
         
         print("Audio playback stopped")
     
@@ -219,7 +226,7 @@ class AudioPlayback:
             return None
     
     def _playback_loop(self) -> None:
-        """Main playback monitoring loop."""
+        """Main playback monitoring loop with improved pipeline management."""
         print("Playback monitoring loop started")
         
         last_state = None
@@ -231,27 +238,67 @@ class AudioPlayback:
                 current_state = self.playback_state
                 
                 if current_state != last_state:
-                    # Need to recreate pipeline for new state
+                    print(f"State changed from {last_state} to {current_state}, recreating pipeline")
+                    
                     with self.lock:
-                        # Stop old pipeline if exists
+                        # Proper pipeline cleanup with state transitions
                         if pipeline:
+                            print("Stopping existing pipeline...")
+                            # First pause, then ready, then null (proper state machine)
+                            pipeline.set_state(Gst.State.PAUSED)
+                            # Wait for state change to complete with timeout
+                            pipeline.get_state(Gst.CLOCK_TIME_NONE)
+                            
+                            pipeline.set_state(Gst.State.READY)
+                            pipeline.get_state(Gst.CLOCK_TIME_NONE)
+                            
                             pipeline.set_state(Gst.State.NULL)
+                            pipeline.get_state(Gst.CLOCK_TIME_NONE)
+                            
+                            # Clear element references
+                            self.app_source = None
                             pipeline = None
+                            self.pipeline = None
+                            
+                            # Add delay to allow resources to be released
+                            time.sleep(0.5)
+                            
+                            # Force garbage collection
+                            import gc
+                            gc.collect()
                         
                         # Create new pipeline if needed
                         if current_state != "none":
-                            pipeline = self._create_playback_pipeline()
-                            if pipeline:
-                                # Start the pipeline
-                                ret = pipeline.set_state(Gst.State.PLAYING)
-                                if ret == Gst.StateChangeReturn.FAILURE:
-                                    print("Failed to start playback pipeline")
-                                    pipeline = None
-                                else:
-                                    print(f"Started playback in {current_state} mode")
+                            try:
+                                pipeline = self._create_playback_pipeline()
+                                if pipeline:
+                                    print("Starting new pipeline...")
+                                    # Gradual state transition: NULL -> READY -> PAUSED -> PLAYING
+                                    ret = pipeline.set_state(Gst.State.READY)
+                                    if ret == Gst.StateChangeReturn.FAILURE:
+                                        raise Exception("Failed to reach READY state")
+                                    pipeline.get_state(Gst.CLOCK_TIME_NONE)
+                                    
+                                    ret = pipeline.set_state(Gst.State.PAUSED)
+                                    if ret == Gst.StateChangeReturn.FAILURE:
+                                        raise Exception("Failed to reach PAUSED state")
+                                    pipeline.get_state(Gst.CLOCK_TIME_NONE)
+                                    
+                                    ret = pipeline.set_state(Gst.State.PLAYING)
+                                    if ret == Gst.StateChangeReturn.FAILURE:
+                                        raise Exception("Failed to reach PLAYING state")
+                                    
+                                    # Save only after successful start
+                                    self.pipeline = pipeline
+                                    print(f"Successfully started playback in {current_state} mode")
+                            except Exception as e:
+                                print(f"Pipeline creation/start failed: {e}")
+                                if pipeline:
+                                    pipeline.set_state(Gst.State.NULL)
+                                pipeline = None
+                                self.pipeline = None
+                                self.app_source = None
                         
-                        # Store current pipeline
-                        self.pipeline = pipeline
                         last_state = current_state
                 
                 # Brief sleep to avoid CPU usage
@@ -261,8 +308,12 @@ class AudioPlayback:
                 print(f"Error in playback loop: {e}")
                 time.sleep(1.0)
         
-        # Cleanup pipeline at exit
+        # Cleanup pipeline at exit - with proper state transitions
         if pipeline:
+            pipeline.set_state(Gst.State.PAUSED)
+            pipeline.get_state(500 * Gst.MSECOND)  # 500ms timeout
+            pipeline.set_state(Gst.State.READY)
+            pipeline.get_state(500 * Gst.MSECOND)  # 500ms timeout
             pipeline.set_state(Gst.State.NULL)
         
         print("Playback monitoring loop stopped")

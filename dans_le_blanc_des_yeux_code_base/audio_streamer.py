@@ -111,11 +111,54 @@ class AudioStreamer:
             print("Using default audio device names")
     
     def _find_audio_devices(self):
-        """Find audio devices using direct ALSA commands instead of GStreamer device monitor."""
-        # This is intentionally a minimal implementation to avoid GStreamer device monitoring
-        # The actual device selection will be done directly in the pipeline creation
-        print("Audio device discovery bypassed for minimal implementation")
-        print("Devices will be selected based on names when creating pipelines")
+        """Find audio devices and map names to IDs for more reliable access."""
+        self.personal_mic_id = None
+        self.global_mic_id = None
+        
+        try:
+            # Create a temporary pipeline to enumerate devices
+            device_list_pipeline = Gst.parse_launch("pulsesrc name=source ! fakesink")
+            source = device_list_pipeline.get_by_name("source")
+            
+            # Get the device property from element
+            device_prop = source.get_property("device")
+            
+            # Get the PulseAudio device enumeration
+            device_list_pipeline.set_state(Gst.State.READY)
+            
+            # Get available devices
+            device_provider = source.get_property("device-provider")
+            if device_provider:
+                devices = device_provider.get_devices()
+                
+                print(f"Found {len(devices)} audio input devices:")
+                for device in devices:
+                    device_name = device.get_display_name()
+                    device_id = device.get_properties().get_string("device.id")
+                    
+                    print(f"  - {device_name} (ID: {device_id})")
+                    
+                    # Check if it matches our target devices
+                    if self.personal_mic_name.lower() in device_name.lower():
+                        self.personal_mic_id = device_id
+                        print(f"    → Matched as personal mic")
+                    
+                    if self.global_mic_name.lower() in device_name.lower():
+                        self.global_mic_id = device_id
+                        print(f"    → Matched as global mic")
+            
+            # Clean up
+            device_list_pipeline.set_state(Gst.State.NULL)
+            
+            # Check if we found our devices
+            if not self.personal_mic_id:
+                print(f"WARNING: Could not find personal mic '{self.personal_mic_name}'")
+            if not self.global_mic_id:
+                print(f"WARNING: Could not find global mic '{self.global_mic_name}'")
+            
+        except Exception as e:
+            print(f"Error discovering audio devices: {e}")
+            print("Using device names as fallback")
     
     def _setup_sockets(self):
         """Set up UDP sockets for audio transmission."""
@@ -220,22 +263,21 @@ class AudioStreamer:
             self._stop_streaming()
     
     def _create_pipeline_str(self, mic_type: str) -> str:
-        """Create a pipeline string for the specified mic type."""
+        """Create a pipeline string for the specified mic type using device IDs when available."""
         if mic_type == "personal":
-            # Create a pipeline for the personal mic using the microphone name
-            # Use pulsesrc instead of alsasrc to avoid device conflicts
+            # Use device ID if available, otherwise fall back to name
+            device_param = f'device-id="{self.personal_mic_id}"' if self.personal_mic_id else f'device="{self.personal_mic_name}"'
             return (
-                f'pulsesrc device="{self.personal_mic_name}" ! '
+                f'pulsesrc {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
                 'audio/x-raw, format=S16LE ! '
                 'appsink name=sink emit-signals=true sync=false'
             )
         else:  # global
-            # Create a pipeline for the global mic using the microphone name
-            # Use pulsesrc instead of alsasrc to avoid device conflicts
+            device_param = f'device-id="{self.global_mic_id}"' if self.global_mic_id else f'device="{self.global_mic_name}"'
             return (
-                f'pulsesrc device="{self.global_mic_name}" ! '
+                f'pulsesrc {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
                 'audio/x-raw, format=S16LE ! '
