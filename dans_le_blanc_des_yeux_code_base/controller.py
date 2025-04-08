@@ -18,7 +18,8 @@ import subprocess
 # Initialize GStreamer BEFORE importing OpenCV-related modules
 # This ensures GStreamer is initialized in the main thread
 try:
-    # os.environ["GST_DEBUG"] = "4"
+    # default 2 (set to 4 or more for detail debugging)
+    os.environ["GST_DEBUG"] = "2"
 
     import gi
     gi.require_version('Gst', '1.0')

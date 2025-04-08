@@ -1,4 +1,4 @@
-#line 1 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 1 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 // MPU-6050 Accelerometer + Gyro
 // code inspired by mattzzw's project: https://github.com/mattzzw/Arduino-mpu6050
 
@@ -49,21 +49,21 @@ int16_t accX = 0, accY = 0, accZ = 0;
 
 double gyrXoffs = -281.00, gyrYoffs = 18.00, gyrZoffs = -83.00;
 
-#line 51 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 51 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 void setup();
-#line 102 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 102 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 void loop();
-#line 236 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 236 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 void calibrate();
-#line 259 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 259 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 void read_sensor_data();
-#line 280 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 280 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 int i2c_read(int addr, int start, uint8_t *buffer, int size);
-#line 307 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 307 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 int i2c_write(int addr, int start, const uint8_t *pData, int size);
-#line 328 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 328 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 int i2c_write_reg(int addr, int reg, uint8_t data);
-#line 51 "/home/lucienfradet/Arduino/CART461_PEOPLE_WATCHING/people_watching/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
+#line 51 "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/motor_mpu_driver.ino"
 void setup()
 {      
   int error;
