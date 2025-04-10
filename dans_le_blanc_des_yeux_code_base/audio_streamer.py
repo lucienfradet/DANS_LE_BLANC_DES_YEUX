@@ -300,8 +300,10 @@ class AudioStreamer:
                 f'pulsesrc {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
-                'audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! '
+                'audio/x-raw, format=S16LE, channels=1, rate=44100, layout=interleaved ! '
                 'audioconvert ! '  # Add extra audioconvert for better caps negotiation
+                'audiochannelmix ! '  # Use audiochannelmix to convert mono→stereo
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Now we have stereo
                 'rtpL16pay name=pay0 ! '  # Add RTP payloader to properly format RTP packets
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'

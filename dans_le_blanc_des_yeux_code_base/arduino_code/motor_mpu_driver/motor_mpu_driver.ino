@@ -19,7 +19,8 @@
 #define NEMA23_DIR_PIN 6
 #define NEMA23_PUL_PIN 7
 
-#define PRESSURE_PLATE_SIGNAL 8    // Pin receiving motor enable from pressure plate
+// Pin 8 on pi0 (black) broken on pi1 so use pin 3
+#define PRESSURE_PLATE_SIGNAL 3    // Pin receiving motor enable from pressure plate
 
 AccelStepper stepperTilt(AccelStepper::DRIVER, NEMA17_PUL_PIN, NEMA17_DIR_PIN); 
 AccelStepper stepperPan(AccelStepper::DRIVER, NEMA23_PUL_PIN, NEMA23_DIR_PIN);  

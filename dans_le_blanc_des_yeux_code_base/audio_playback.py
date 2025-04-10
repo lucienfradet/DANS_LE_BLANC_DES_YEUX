@@ -195,24 +195,41 @@ class AudioPlayback:
             # Create a descriptive pipeline name
             pipeline_name = f"playback_{name}_{port}"
             
+            # Get the default sink from PulseAudio configuration
+            import subprocess
+            result = subprocess.run(['pactl', 'info'], 
+                                   stdout=subprocess.PIPE, 
+                                   stderr=subprocess.PIPE, 
+                                   text=True)
+            default_sink = None
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'Default Sink:' in line:
+                        default_sink = line.split(':', 1)[1].strip()
+                        print(f"Found default sink: {default_sink}")
+                        break
+            
             # Create pipeline for receiving RTP audio and playing it
             # Include a panorama element that we can adjust dynamically
+            # Explicitly specify the output device and simplify caps
             pipeline_str = (
                 f"udpsrc port={port} timeout=0 do-timestamp=true buffer-size=65536 ! "
                 "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
-                "rtpjitterbuffer latency=50 ! "  # Add jitter buffer for smoother playback
+                "rtpjitterbuffer latency=50 ! "
                 "rtpL16depay ! "
                 "audioconvert ! "
-                "audioresample ! "
-                "audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! "
-                "queue max-size-bytes=65536 leaky=downstream ! "
-                "audioconvert ! "
+                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "  # Simplified caps
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
-                "queue leaky=downstream ! "
                 "audioconvert ! "
-                "audioresample ! "
-                "pulsesink sync=false"
+                "audioresample quality=10 ! "  # Add quality parameter
+                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
             )
+            
+            # Add device-specific sink if we found the default sink
+            if default_sink:
+                pipeline_str += f'pulsesink sync=false device="{default_sink}"'
+            else:
+                pipeline_str += 'pulsesink sync=false'
             
             print(f"Creating {name} playback pipeline: {pipeline_str}")
             

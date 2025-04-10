@@ -1,6 +1,7 @@
 #define PRESSURE_SENSOR_1_PIN A0
 #define PRESSURE_SENSOR_2_PIN A1
-#define MOTOR_ENABLE_PIN 4    // Pin controlling motor enable (adjust as needed)
+// PIN 5 on pi1 (withe) because the pin 4 is broken!!! Pin 4 on pi0 (black)
+#define MOTOR_ENABLE_PIN 5    // Pin controlling motor enable (adjust as needed)
 
 const int threshold = 900;
 
