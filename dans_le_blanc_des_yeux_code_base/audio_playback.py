@@ -22,8 +22,7 @@ playback logic:
 Improved audio playback module for the Dans le Blanc des Yeux installation.
 Creates and maintains persistent pipelines for both stream types at startup,
 and dynamically adjusts panorama settings based on system state.
-Now fully integrated with GStreamer RTP for consistent audio streaming with
-enhanced negotiation capabilities.
+Now fully integrated with GStreamer RTP for consistent audio streaming.
 """
 
 import os
@@ -210,31 +209,28 @@ class AudioPlayback:
                         print(f"Found default sink: {default_sink}")
                         break
             
-            # Create improved pipeline for receiving RTP audio with better negotiation
-            # Let rtpL16depay negotiate its own caps first, then convert
+            # Create pipeline for receiving RTP audio and playing it
+            # Include a panorama element that we can adjust dynamically
             pipeline_str = (
-                f"udpsrc port={port} timeout=2000000 buffer-size=524288 ! "
+                f"udpsrc port={port} timeout=0 buffer-size=65536 ! "
                 "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
-                "rtpjitterbuffer latency=200 drop-on-latency=true ! "  # Increased latency for more buffer
-                "queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! "  # Unlimited queue for better buffering
+                "rtpjitterbuffer latency=100 ! "  # Increase latency for more buffer
                 "rtpL16depay ! "
-                "audioconvert ! "  # Convert before applying caps
-                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "  # Now apply caps after conversion
-                "queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! "  # Another queue for smoothing
+                "queue ! "  # Add queue after depay
+                "audioconvert ! "
+                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
+                f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
+                "queue ! "  # Add queue after panorama
                 "audioconvert ! "
                 "audioresample quality=10 ! "
-                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "  # Explicit caps after resample
-                f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
-                "queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! "  # Another queue after panorama
-                "audioconvert ! "
-                "audioresample ! "
+                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
             )
             
             # Add device-specific sink if we found the default sink
             if default_sink:
-                pipeline_str += f'pulsesink sync=false async=true device="{default_sink}" buffer-time=200000'
+                pipeline_str += f'pulsesink sync=false async=false device="{default_sink}"'
             else:
-                pipeline_str += 'pulsesink sync=false async=true buffer-time=200000'
+                pipeline_str += 'pulsesink sync=false async=false'
             
             print(f"Creating {name} playback pipeline: {pipeline_str}")
             
@@ -245,7 +241,7 @@ class AudioPlayback:
             # Get the panorama element for later adjustments
             panorama = pipeline.get_by_name(f"panorama_{name}")
             
-            # More careful state transitions with proper error checking
+            # More careful state transitions
             print(f"Setting {name} pipeline to NULL state first")
             pipeline.set_state(Gst.State.NULL)
             pipeline.get_state(500 * Gst.MSECOND)  # Wait for state change
@@ -256,27 +252,7 @@ class AudioPlayback:
                 print(f"Failed to set {name} pipeline to READY state")
                 pipeline.set_state(Gst.State.NULL)
                 return None, None
-            
-            # Wait longer for this state change
-            state_change_ret = pipeline.get_state(2000 * Gst.MSECOND)
-            if state_change_ret[0] != Gst.StateChangeReturn.SUCCESS:
-                print(f"Timed out waiting for {name} pipeline to reach READY state")
-                pipeline.set_state(Gst.State.NULL)
-                return None, None
-            
-            # Add PAUSED state transition for better negotiation
-            print(f"Setting {name} pipeline to PAUSED state for negotiation")
-            ret = pipeline.set_state(Gst.State.PAUSED)
-            if ret == Gst.StateChangeReturn.FAILURE:
-                print(f"Failed to set {name} pipeline to PAUSED state")
-                pipeline.set_state(Gst.State.NULL)
-                return None, None
-            
-            # Wait longer for PAUSED negotiation
-            state_change_ret = pipeline.get_state(2000 * Gst.MSECOND)
-            if state_change_ret[0] != Gst.StateChangeReturn.SUCCESS:
-                print(f"Timed out waiting for {name} pipeline to reach PAUSED state")
-                # Continue anyway, it might still work
+            pipeline.get_state(500 * Gst.MSECOND)  # Wait for state change
             
             print(f"Setting {name} pipeline to PLAYING state")
             ret = pipeline.set_state(Gst.State.PLAYING)
@@ -383,17 +359,6 @@ class AudioPlayback:
                         if pending_personal == Gst.State.VOID_PENDING and personal_state != Gst.State.PLAYING:
                             if consecutive_failures < max_consecutive_failures:
                                 print(f"Personal pipeline not PLAYING (state={personal_state}), trying to restart...")
-                                
-                                # More careful restart procedure
-                                self.personal_pipeline.set_state(Gst.State.NULL)
-                                self.personal_pipeline.get_state(500 * Gst.MSECOND)
-                                
-                                self.personal_pipeline.set_state(Gst.State.READY)
-                                self.personal_pipeline.get_state(500 * Gst.MSECOND)
-                                
-                                self.personal_pipeline.set_state(Gst.State.PAUSED)
-                                self.personal_pipeline.get_state(1000 * Gst.MSECOND)
-                                
                                 ret = self.personal_pipeline.set_state(Gst.State.PLAYING)
                                 if ret == Gst.StateChangeReturn.FAILURE:
                                     consecutive_failures += 1
@@ -403,26 +368,10 @@ class AudioPlayback:
                             elif consecutive_failures == max_consecutive_failures:
                                 print("Giving up on restarting personal pipeline after multiple failures")
                                 consecutive_failures += 1
-                                
-                                # Try to recreate the pipeline
-                                self.personal_pipeline.set_state(Gst.State.NULL)
-                                self.personal_pipeline, self.personal_panorama = self._create_playback_pipeline(
-                                    self.PERSONAL_MIC_PORT, "personal")
                         
                         if pending_global == Gst.State.VOID_PENDING and global_state != Gst.State.PLAYING:
                             if consecutive_failures < max_consecutive_failures:
                                 print(f"Global pipeline not PLAYING (state={global_state}), trying to restart...")
-                                
-                                # More careful restart procedure
-                                self.global_pipeline.set_state(Gst.State.NULL)
-                                self.global_pipeline.get_state(500 * Gst.MSECOND)
-                                
-                                self.global_pipeline.set_state(Gst.State.READY)
-                                self.global_pipeline.get_state(500 * Gst.MSECOND)
-                                
-                                self.global_pipeline.set_state(Gst.State.PAUSED)
-                                self.global_pipeline.get_state(1000 * Gst.MSECOND)
-                                
                                 ret = self.global_pipeline.set_state(Gst.State.PLAYING)
                                 if ret == Gst.StateChangeReturn.FAILURE:
                                     consecutive_failures += 1
@@ -432,11 +381,6 @@ class AudioPlayback:
                             elif consecutive_failures == max_consecutive_failures:
                                 print("Giving up on restarting global pipeline after multiple failures")
                                 consecutive_failures += 1
-                                
-                                # Try to recreate the pipeline
-                                self.global_pipeline.set_state(Gst.State.NULL)
-                                self.global_pipeline, self.global_panorama = self._create_playback_pipeline(
-                                    self.GLOBAL_MIC_PORT, "global")
                         
                         # Reset counter if both pipelines are in desired state
                         if personal_state == Gst.State.PLAYING and global_state == Gst.State.PLAYING:
