@@ -1,3 +1,5 @@
 /python_opencv/venv/
 /people_watching/venv/
 /dans_le_blanc_des_yeux_code_base/config.ini
+/dans_le_blanc_des_yeux_code_base/arduino_code/motor_mpu_driver/build
+/dans_le_blanc_des_yeux_code_base/arduino_code/pressure_plate_controller/build
