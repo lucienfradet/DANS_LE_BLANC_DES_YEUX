@@ -316,7 +316,7 @@ class AudioStreamer:
         })
     
     def _create_pipeline_str(self, mic_type: str, port: int) -> str:
-        """Create a pipeline string with more flexible format negotiation."""
+        """Create a pipeline string for the specified mic type using device IDs when available."""
         if mic_type == "personal":
             # For PulseAudio, we can use the device number directly
             if self.personal_mic_id:
@@ -325,20 +325,15 @@ class AudioStreamer:
                 device_param = f'device="{self.personal_mic_name}"'
                 
             return (
-                f'pulsesrc {device_param} do-timestamp=true ! '
-                'queue ! '  # Add queue to help with streaming
+                f'pulsesrc {device_param} ! '
                 'audio/x-raw, rate=44100, channels=1 ! '  # Explicitly set mono input
                 'audioconvert ! '
-                'audioresample quality=10 ! '  # Better quality resampling
-                'audio/x-raw, format=S16LE, channels=1, rate=44100 ! '  # Keep as mono
-                'audioconvert ! '
-                # Now convert mono to stereo (needed for playback)
-                'audiochannelmix ! audio/x-raw, channels=2 ! '
-                'queue ! '  # Another queue before RTP payloading
-                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Explicit caps before rtpL16pay
-                'rtpL16pay mtu=1400 ! '  # Set MTU explicitly and remove name=pay0
+                'audioresample ! '
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Convert to stereo
+                'audioconvert ! '  # Additional conversion to ensure compatibility
+                'rtpL16pay name=pay0 ! '  # Add name=pay0 as some GStreamer versions expect this
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
-                f'udpsink host={self.remote_ip} port={port} sync=false async=false buffer-size=65536'
+                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
         else:  # global
             # Similar changes for global mic
@@ -348,17 +343,14 @@ class AudioStreamer:
                 device_param = f'device="{self.global_mic_name}"'
                 
             return (
-                f'pulsesrc {device_param} do-timestamp=true ! '
-                'queue ! '
-                f'audio/x-raw ! '  # More flexible format
-                'audioconvert ! '
-                'audioresample quality=10 ! '
+                f'pulsesrc {device_param} ! '
+                f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
+                'audioconvert ! audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
-                'queue ! '
-                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Explicit caps before rtpL16pay
-                'rtpL16pay mtu=1400 ! '
+                'audioconvert ! '  # Additional conversion to ensure compatibility
+                'rtpL16pay name=pay0 ! '  # Add name=pay0
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
-                f'udpsink host={self.remote_ip} port={port} sync=false async=false buffer-size=65536'
+                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
     
     def _create_all_pipelines(self) -> bool:
