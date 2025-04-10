@@ -22,6 +22,7 @@ playback logic:
 Improved audio playback module for the Dans le Blanc des Yeux installation.
 Creates and maintains persistent pipelines for both stream types at startup,
 and dynamically adjusts panorama settings based on system state.
+Now fully integrated with GStreamer RTP for consistent audio streaming.
 """
 
 import os
@@ -194,12 +195,12 @@ class AudioPlayback:
             # Create a descriptive pipeline name
             pipeline_name = f"playback_{name}_{port}"
             
-            # Create pipeline for receiving UDP audio and playing it
+            # Create pipeline for receiving RTP audio and playing it
             # Include a panorama element that we can adjust dynamically
-            # Using only compatible properties for your GStreamer version
             pipeline_str = (
-                f"udpsrc port={port} timeout=0 do-timestamp=true ! "
+                f"udpsrc port={port} timeout=0 do-timestamp=true buffer-size=65536 ! "
                 "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
+                "rtpjitterbuffer latency=50 ! "  # Add jitter buffer for smoother playback
                 "rtpL16depay ! "
                 "audioconvert ! "
                 "audioresample ! "

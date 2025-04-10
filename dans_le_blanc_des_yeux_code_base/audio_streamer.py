@@ -19,12 +19,12 @@ streaming logic:
 Improved audio streaming module for the Dans le Blanc des Yeux installation.
 Creates and maintains persistent pipelines for both mic types at startup,
 and pauses/unpauses the appropriate pipeline based on system state.
+Now uses GStreamer RTP for both sending and receiving audio.
 """
 
 import os
 import time
 import threading
-import socket
 import configparser
 from typing import Dict, Optional, Tuple, List, Callable, Any
 
@@ -41,14 +41,13 @@ Gst.init(None)
 # Audio configuration
 RATE = 44100
 CHANNELS = 2
-CHUNK_SIZE = 1024  # Frames per buffer
 
 # Define ports for different mic types
 GLOBAL_MIC_PORT = 6000
 PERSONAL_MIC_PORT = 6001
 
 class AudioStreamer:
-    """Handles audio streaming between devices using persistent GStreamer pipelines."""
+    """Handles audio streaming between devices using persistent GStreamer pipelines with RTP."""
     
     def __init__(self, remote_ip: str):
         self.remote_ip = remote_ip
@@ -74,27 +73,13 @@ class AudioStreamer:
         
         # Threading
         self.running = False
-        self.threads = []
         self.lock = threading.Lock()
-        
-        # UDP receive sockets and threads
-        self.receive_personal_socket = None
-        self.receive_global_socket = None
-        self.receiver_personal_thread = None
-        self.receiver_global_thread = None
-        
-        # Callbacks for received audio
-        self.on_personal_mic_received = None
-        self.on_global_mic_received = None
         
         # Load settings from config
         self._load_config()
         
         # Create direct ALSA commands for finding devices (no GStreamer device monitor)
         self._find_audio_devices()
-        
-        # Create sockets
-        self._setup_sockets()
         
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
@@ -196,26 +181,6 @@ class AudioStreamer:
             print(f"Error discovering audio devices: {e}")
             print("Using device names as fallback")
     
-    def _setup_sockets(self):
-        """Set up UDP sockets for audio transmission."""
-        try:
-            # Create UDP sockets for receiving on both ports
-            self.receive_personal_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.receive_personal_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.receive_personal_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
-            self.receive_personal_socket.bind(("0.0.0.0", PERSONAL_MIC_PORT))
-            self.receive_personal_socket.settimeout(0.5)  # Set a timeout for responsive shutdown
-            
-            self.receive_global_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.receive_global_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.receive_global_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
-            self.receive_global_socket.bind(("0.0.0.0", GLOBAL_MIC_PORT))
-            self.receive_global_socket.settimeout(0.5)  # Set a timeout for responsive shutdown
-            
-            print("UDP sockets created for audio transmission")
-        except Exception as e:
-            print(f"Error setting up audio sockets: {e}")
-    
     def start(self) -> bool:
         """Start the audio streaming system with persistent pipelines."""
         print("Starting improved audio streamer with persistent pipelines...")
@@ -227,19 +192,6 @@ class AudioStreamer:
             print("Failed to create audio streaming pipelines")
             self.running = False
             return False
-        
-        # Start receiver threads for both ports
-        self.receiver_personal_thread = threading.Thread(target=self._receiver_loop, 
-                                                        args=(self.receive_personal_socket, True))
-        self.receiver_personal_thread.daemon = True
-        self.receiver_personal_thread.start()
-        self.threads.append(self.receiver_personal_thread)
-        
-        self.receiver_global_thread = threading.Thread(target=self._receiver_loop, 
-                                                      args=(self.receive_global_socket, False))
-        self.receiver_global_thread.daemon = True
-        self.receiver_global_thread.start()
-        self.threads.append(self.receiver_global_thread)
         
         # Check initial state to update which pipeline should be active
         self._update_streaming_based_on_state()
@@ -270,31 +222,7 @@ class AudioStreamer:
         self.personal_pipeline_active = False
         self.global_pipeline_active = False
         
-        # Wait for threads to finish
-        for thread in self.threads:
-            if thread.is_alive():
-                thread.join(timeout=1.0)
-        
-        # Close sockets
-        for socket_obj in [self.receive_personal_socket, self.receive_global_socket]:
-            if socket_obj:
-                try:
-                    socket_obj.close()
-                except:
-                    pass
-        
-        self.receive_personal_socket = None
-        self.receive_global_socket = None
-        
         print("Audio streamer stopped")
-    
-    def register_personal_mic_callback(self, callback: Callable[[bytes], None]) -> None:
-        """Register a callback for when personal mic audio is received."""
-        self.on_personal_mic_received = callback
-    
-    def register_global_mic_callback(self, callback: Callable[[bytes], None]) -> None:
-        """Register a callback for when USB Audio Device mic audio is received."""
-        self.on_global_mic_received = callback
     
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
@@ -372,8 +300,10 @@ class AudioStreamer:
                 f'pulsesrc {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
-                'audio/x-raw, format=S16LE ! '
-                'udpsink host=' + self.remote_ip + ' port=' + str(port) + ' sync=false'
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
+                'rtpL16pay ! '  # Add RTP payloader to properly format RTP packets
+                'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
+                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
         else:  # global
             if self.global_mic_id:
@@ -385,8 +315,10 @@ class AudioStreamer:
                 f'pulsesrc {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
-                'audio/x-raw, format=S16LE ! '
-                'udpsink host=' + self.remote_ip + ' port=' + str(port) + ' sync=false'
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
+                'rtpL16pay ! '  # Add RTP payloader to properly format RTP packets
+                'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
+                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
     
     def _create_all_pipelines(self) -> bool:
@@ -420,66 +352,3 @@ class AudioStreamer:
         except Exception as e:
             print(f"Error creating audio streaming pipelines: {e}")
             return False
-    
-    def _receiver_loop(self, socket_obj, is_personal: bool) -> None:
-        """Receive audio from remote device on the specified socket."""
-        mic_type = "personal" if is_personal else "global"
-        port = PERSONAL_MIC_PORT if is_personal else GLOBAL_MIC_PORT
-        print(f"Starting {mic_type} audio receiver on port {port}")
-        
-        buffer = {}  # Store packets by sequence number for reordering
-        next_seq = 0  # Next expected sequence number
-        buffer_size = 10  # Max packets to buffer for reordering
-        
-        try:
-            while self.running:
-                try:
-                    # Receive packet with timeout
-                    data, addr = socket_obj.recvfrom(65536)
-                    
-                    if len(data) < 5:  # Need 4 bytes for seq num + 1 for mic ID
-                        continue
-                    
-                    # Extract sequence number and mic type
-                    seq_num = int.from_bytes(data[:4], byteorder='big')
-                    mic_type_byte = data[4:5]
-                    audio_data = data[5:]
-                    
-                    # Add to buffer
-                    buffer[seq_num] = (mic_type_byte, audio_data)
-                    
-                    # Process packets in order
-                    while next_seq in buffer:
-                        # Get the next packet
-                        mic_type_byte, audio_data = buffer.pop(next_seq)
-                        
-                        # Call appropriate callback based on received data
-                        # and which receiver thread we're in
-                        if is_personal and self.on_personal_mic_received:
-                            self.on_personal_mic_received(audio_data)
-                        elif not is_personal and self.on_global_mic_received:
-                            self.on_global_mic_received(audio_data)
-                        
-                        next_seq += 1
-                    
-                    # Limit buffer size by dropping old packets
-                    if len(buffer) > buffer_size:
-                        # If buffer is too large, find the lowest sequence number
-                        seq_keys = sorted(buffer.keys())
-                        # Keep the most recent packets
-                        for k in seq_keys[:-buffer_size]:
-                            buffer.pop(k, None)
-                        
-                        # Update next_seq if we've skipped packets
-                        if seq_keys[-buffer_size] > next_seq:
-                            next_seq = seq_keys[-buffer_size]
-                    
-                except socket.timeout:
-                    # This is expected due to the socket timeout
-                    pass
-                except Exception as e:
-                    if self.running:
-                        print(f"Error in {mic_type} audio receiver: {e}")
-                        time.sleep(0.5)
-        finally:
-            print(f"{mic_type} audio receiver stopped")
