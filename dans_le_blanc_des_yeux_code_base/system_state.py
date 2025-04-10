@@ -1,12 +1,13 @@
 """
 Thread-safe state management for the Dans le Blanc des Yeux project.
 Uses a singleton pattern to ensure a single state instance across the application.
+with debounce
 """
 
 import threading
 import configparser
-import time  # Added import for timestamp
-from typing import Dict, Any, List, Callable
+import time  # Import for timestamp tracking
+from typing import Dict, Any, List, Callable, Optional
 
 class SystemState:
     """Thread-safe singleton class to manage system state."""
@@ -47,6 +48,11 @@ class SystemState:
             "timestamp": 0
         }
         
+        # Track pressure state changes for debouncing
+        self._local_pressure_change_time = time.time()
+        self._remote_pressure_change_time = time.time()
+        self._pressure_debounce_time = 1.0  # Default value in seconds
+        
         # Configuration
         self._config = configparser.ConfigParser()
         self._config.read('config.ini')
@@ -65,9 +71,17 @@ class SystemState:
             return self._remote_device.copy()
     
     def update_local_state(self, data: Dict[str, Any]) -> None:
-        """Update the local device state."""
+        """Update the local device state and track pressure changes for debounce."""
         with self._state_lock:
             changed = False
+            
+            # Check for pressure change specifically
+            if "pressure" in data and data["pressure"] != self._local_device["pressure"]:
+                # Update pressure change time
+                self._local_pressure_change_time = time.time()
+                print(f"Local pressure changed to {data['pressure']} (debounce timer started)")
+            
+            # Update all state data
             for key, value in data.items():
                 if key in self._local_device and self._local_device[key] != value:
                     self._local_device[key] = value
@@ -77,11 +91,20 @@ class SystemState:
             self._notify_observers("local")
     
     def update_remote_state(self, data: Dict[str, Any]) -> None:
-        """Update the remote device state."""
+        """
+        Update the remote device state. Remote pressure updates are considered
+        already debounced by the remote device, so we don't apply additional debouncing.
+        """
         with self._state_lock:
             changed = False
+            
+            # Update all state data without starting a debounce timer for remote pressure
             for key, value in data.items():
                 if key in self._remote_device and self._remote_device[key] != value:
+                    # For pressure changes, just log without debouncing
+                    if key == "pressure":
+                        print(f"Remote pressure changed to {value} (accepted immediately)")
+                    
                     self._remote_device[key] = value
                     changed = True
         
@@ -159,6 +182,58 @@ class SystemState:
         """Notify all observers of a state change."""
         for observer in self._observers:
             observer(changed_state)
+    
+    # New methods for pressure debounce logic
+    
+    def set_pressure_debounce_time(self, debounce_time: float) -> None:
+        """Set the debounce time for pressure changes."""
+        with self._state_lock:
+            self._pressure_debounce_time = max(0.0, float(debounce_time))
+        print(f"Set pressure debounce time to {self._pressure_debounce_time} seconds")
+    
+    def get_pressure_debounce_time(self) -> float:
+        """Get the current pressure debounce time."""
+        with self._state_lock:
+            return self._pressure_debounce_time
+    
+    def is_pressure_state_stable(self) -> bool:
+        """
+        Check if the local pressure state has been stable for the debounce time.
+        Remote pressure is considered already debounced by the remote device.
+        
+        Returns:
+            True if pressure state is stable (only checks local debounce)
+        """
+        with self._state_lock:
+            current_time = time.time()
+            local_time_since_change = current_time - self._local_pressure_change_time
+            
+            # Only check local pressure debounce since remote is considered already debounced
+            return local_time_since_change >= self._pressure_debounce_time
+    
+    def is_local_pressure_stable(self) -> bool:
+        """
+        Check if the local pressure state has been stable for at least the debounce time.
+        
+        Returns:
+            True if local pressure state is stable, False otherwise
+        """
+        with self._state_lock:
+            current_time = time.time()
+            local_time_since_change = current_time - self._local_pressure_change_time
+            return local_time_since_change >= self._pressure_debounce_time
+    
+    def is_remote_pressure_stable(self) -> bool:
+        """
+        Check if the remote pressure state has been stable for at least the debounce time.
+        
+        Returns:
+            True if remote pressure state is stable, False otherwise
+        """
+        with self._state_lock:
+            current_time = time.time()
+            remote_time_since_change = current_time - self._remote_pressure_change_time
+            return remote_time_since_change >= self._pressure_debounce_time
 
 
 # Create a singleton instance that can be imported directly

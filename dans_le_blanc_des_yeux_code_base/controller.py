@@ -15,6 +15,8 @@ import os
 import threading
 import subprocess
 
+from system_state import system_state
+
 # Initialize GStreamer BEFORE importing OpenCV-related modules
 # This ensures GStreamer is initialized in the main thread
 try:
@@ -194,6 +196,15 @@ def initialize_components():
     # Load configuration
     config = configparser.ConfigParser()
     config.read('config.ini')
+
+    # Set pressure debounce time if specified in config
+    if 'system' in config and 'pressure_debounce_time' in config['system']:
+        try:
+            debounce_time = config.getfloat('system', 'pressure_debounce_time', fallback=1.0)
+            system_state.set_pressure_debounce_time(debounce_time)
+            print(f"Pressure debounce time set to {debounce_time} seconds")
+        except (ValueError, configparser.Error) as e:
+            print(f"Error reading pressure debounce time: {e}. Using default.")
     
     # Get remote IP from config
     remote_ip = config['ip']['pi-ip']
@@ -210,8 +221,6 @@ def initialize_components():
     motor_params = {}
     if 'motor' in config:
         try:
-            motor_params['required_duration'] = config.getfloat('motor', 'required_duration', fallback=0.8)
-            motor_params['check_interval'] = config.getfloat('motor', 'check_interval', fallback=0.1)
             motor_params['motion_timeout'] = config.getfloat('motor', 'motion_timeout', fallback=2.0)
             print(f"Using motor settings from config: {motor_params}")
         except (ValueError, configparser.Error) as e:
