@@ -16,10 +16,8 @@ streaming logic:
 """
 
 """
-Improved audio streaming module for the Dans le Blanc des Yeux installation.
-Creates and maintains persistent pipelines for both mic types at startup,
-and pauses/unpauses the appropriate pipeline based on system state.
-Now uses GStreamer RTP for both sending and receiving audio.
+Audio streaming module for the Dans le Blanc des Yeux installation using GStreamer.
+Modified to use raw UDP audio data instead of RTP for more reliable transmission.
 """
 
 import os
@@ -47,7 +45,7 @@ GLOBAL_MIC_PORT = 6000
 PERSONAL_MIC_PORT = 6001
 
 class AudioStreamer:
-    """Handles audio streaming between devices using persistent GStreamer pipelines with RTP."""
+    """Handles audio streaming between devices using persistent GStreamer pipelines with raw UDP."""
     
     def __init__(self, remote_ip: str):
         self.remote_ip = remote_ip
@@ -183,7 +181,7 @@ class AudioStreamer:
     
     def start(self) -> bool:
         """Start the audio streaming system with persistent pipelines."""
-        print("Starting improved audio streamer with persistent pipelines...")
+        print("Starting audio streamer with raw UDP audio...")
         self.running = True
         
         # Create both pipelines at startup (but initially paused)
@@ -330,9 +328,8 @@ class AudioStreamer:
                 'audioconvert ! '
                 'audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Convert to stereo
-                'audioconvert ! '  # Additional conversion to ensure compatibility
-                'rtpL16pay name=pay0 ! '  # Add name=pay0 as some GStreamer versions expect this
-                'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
+                'audioconvert ! '
+                'wavenc ! '  # Use WAV encoding for reliable framing
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
         else:  # global
@@ -347,9 +344,8 @@ class AudioStreamer:
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
-                'audioconvert ! '  # Additional conversion to ensure compatibility
-                'rtpL16pay name=pay0 ! '  # Add name=pay0
-                'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
+                'audioconvert ! '
+                'wavenc ! '  # Use WAV encoding for reliable framing
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
     
@@ -378,7 +374,7 @@ class AudioStreamer:
                 print("Failed to set global mic pipeline to READY state")
                 return False
             
-            print("Successfully created both audio streaming pipelines")
+            print("Successfully created both audio streaming pipelines using WAV format")
             return True
             
         except Exception as e:

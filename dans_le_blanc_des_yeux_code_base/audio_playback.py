@@ -19,10 +19,8 @@ playback logic:
 """
 
 """
-Improved audio playback module for the Dans le Blanc des Yeux installation.
-Creates and maintains persistent pipelines for both stream types at startup,
-and dynamically adjusts panorama settings based on system state.
-Now fully integrated with GStreamer RTP for consistent audio streaming.
+Audio playback module for the Dans le Blanc des Yeux installation using GStreamer.
+Modified to receive raw UDP audio data instead of RTP for more reliable playback.
 """
 
 import os
@@ -79,7 +77,7 @@ class AudioPlayback:
     
     def start(self) -> bool:
         """Start the audio playback system with persistent pipelines."""
-        print("Starting improved audio playback with persistent pipelines...")
+        print("Starting improved audio playback with raw UDP pipelines...")
         self.running = True
         
         # Create both pipelines at startup
@@ -190,7 +188,7 @@ class AudioPlayback:
             return "both"  # No playback means effectively both channels muted
     
     def _create_playback_pipeline(self, port: int, name: str) -> (Optional[Gst.Pipeline], Optional[Gst.Element]):
-        """Create a more robust playback pipeline with better state handling."""
+        """Create a more robust playback pipeline using raw UDP with WAV framing."""
         try:
             # Create a descriptive pipeline name
             pipeline_name = f"playback_{name}_{port}"
@@ -209,14 +207,12 @@ class AudioPlayback:
                         print(f"Found default sink: {default_sink}")
                         break
             
-            # Create pipeline for receiving RTP audio and playing it
+            # Create pipeline for receiving WAV-formatted UDP audio and playing it
             # Include a panorama element that we can adjust dynamically
             pipeline_str = (
                 f"udpsrc port={port} timeout=0 buffer-size=65536 ! "
-                "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
-                "rtpjitterbuffer latency=100 ! "  # Increase latency for more buffer
-                "rtpL16depay ! "
-                "queue ! "  # Add queue after depay
+                "wavparse ! "  # Parse WAV format from UDP
+                "queue ! "  # Add queue after parse
                 "audioconvert ! "
                 "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
