@@ -230,7 +230,7 @@ class AudioStreamer:
             self._update_streaming_based_on_state()
     
     def _update_streaming_based_on_state(self) -> None:
-        """Update streaming state based on the current system state."""
+        """Update streaming state with improved state transitions."""
         local_state = system_state.get_local_state()
         remote_state = system_state.get_remote_state()
         
@@ -254,29 +254,57 @@ class AudioStreamer:
         
         # Update pipeline states based on should_X_be_active flags
         with self.lock:
-            # Update personal mic pipeline
+            # Update personal mic pipeline with proper state transitions
             if should_personal_be_active != self.personal_pipeline_active:
                 if should_personal_be_active:
-                    print("Activating personal mic streaming")
+                    print("Activating personal mic streaming with proper state transitions")
                     if self.personal_pipeline:
-                        self.personal_pipeline.set_state(Gst.State.PLAYING)
+                        # First to READY, then to PLAYING for better negotiation
+                        self.personal_pipeline.set_state(Gst.State.READY)
+                        self.personal_pipeline.get_state(500 * Gst.MSECOND)  # Wait for state change
+                        ret = self.personal_pipeline.set_state(Gst.State.PLAYING)
+                        
+                        # Check if state change succeeded
+                        if ret == Gst.StateChangeReturn.FAILURE:
+                            print("Failed to set personal pipeline to PLAYING, recreating pipeline")
+                            # Try to recreate the pipeline
+                            self.personal_pipeline.set_state(Gst.State.NULL)
+                            personal_pipeline_str = self._create_pipeline_str("personal", self.PERSONAL_MIC_PORT)
+                            self.personal_pipeline = Gst.parse_launch(personal_pipeline_str)
+                            self.personal_pipeline.set_state(Gst.State.PLAYING)
                 else:
                     print("Pausing personal mic streaming")
                     if self.personal_pipeline:
+                        # First to PAUSED, then to READY to keep resources available
                         self.personal_pipeline.set_state(Gst.State.PAUSED)
+                        self.personal_pipeline.get_state(500 * Gst.MSECOND)  # Wait for state change
+                        self.personal_pipeline.set_state(Gst.State.READY)
                 
                 self.personal_pipeline_active = should_personal_be_active
             
             # Update global mic pipeline
             if should_global_be_active != self.global_pipeline_active:
                 if should_global_be_active:
-                    print("Activating global mic streaming")
+                    print("Activating global mic streaming with proper state transitions")
                     if self.global_pipeline:
-                        self.global_pipeline.set_state(Gst.State.PLAYING)
+                        # Same careful state transitions
+                        self.global_pipeline.set_state(Gst.State.READY)
+                        self.global_pipeline.get_state(500 * Gst.MSECOND)  # Wait for state change
+                        ret = self.global_pipeline.set_state(Gst.State.PLAYING)
+                        
+                        if ret == Gst.StateChangeReturn.FAILURE:
+                            print("Failed to set global pipeline to PLAYING, recreating pipeline")
+                            # Try to recreate the pipeline
+                            self.global_pipeline.set_state(Gst.State.NULL)
+                            global_pipeline_str = self._create_pipeline_str("global", self.GLOBAL_MIC_PORT)
+                            self.global_pipeline = Gst.parse_launch(global_pipeline_str)
+                            self.global_pipeline.set_state(Gst.State.PLAYING)
                 else:
                     print("Pausing global mic streaming")
                     if self.global_pipeline:
                         self.global_pipeline.set_state(Gst.State.PAUSED)
+                        self.global_pipeline.get_state(500 * Gst.MSECOND)  # Wait for state change
+                        self.global_pipeline.set_state(Gst.State.READY)
                 
                 self.global_pipeline_active = should_global_be_active
         
@@ -288,7 +316,7 @@ class AudioStreamer:
         })
     
     def _create_pipeline_str(self, mic_type: str, port: int) -> str:
-        """Create a pipeline string for the specified mic type using device IDs when available."""
+        """Create a pipeline string with more flexible format negotiation."""
         if mic_type == "personal":
             # For PulseAudio, we can use the device number directly
             if self.personal_mic_id:
@@ -297,15 +325,19 @@ class AudioStreamer:
                 device_param = f'device="{self.personal_mic_name}"'
                 
             return (
-                f'pulsesrc {device_param} ! '
+                f'pulsesrc {device_param} do-timestamp=true ! '
+                'queue ! '  # Add queue to help with streaming
                 'audio/x-raw, rate=44100, channels=1 ! '  # Explicitly set mono input
                 'audioconvert ! '
-                'audioresample ! '
-                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Convert to stereo
-                'audioconvert ! '  # Additional conversion to ensure compatibility
-                'rtpL16pay name=pay0 ! '  # Add name=pay0 as some GStreamer versions expect this
+                'audioresample quality=10 ! '  # Better quality resampling
+                'audio/x-raw, format=S16LE, channels=1, rate=44100 ! '  # Keep as mono
+                'audioconvert ! '
+                # Now convert mono to stereo (needed for playback)
+                'audiochannelmix ! audio/x-raw, channels=2 ! '
+                'queue ! '  # Another queue before RTP payloading
+                'rtpL16pay mtu=1400 ! '  # Set MTU explicitly and remove name=pay0
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
-                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
+                f'udpsink host={self.remote_ip} port={port} sync=false async=false buffer-size=65536'
             )
         else:  # global
             # Similar changes for global mic
@@ -315,14 +347,16 @@ class AudioStreamer:
                 device_param = f'device="{self.global_mic_name}"'
                 
             return (
-                f'pulsesrc {device_param} ! '
-                f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
-                'audioconvert ! audioresample ! '
+                f'pulsesrc {device_param} do-timestamp=true ! '
+                'queue ! '
+                f'audio/x-raw ! '  # More flexible format
+                'audioconvert ! '
+                'audioresample quality=10 ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
-                'audioconvert ! '  # Additional conversion to ensure compatibility
-                'rtpL16pay name=pay0 ! '  # Add name=pay0
+                'queue ! '
+                'rtpL16pay mtu=1400 ! '
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
-                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
+                f'udpsink host={self.remote_ip} port={port} sync=false async=false buffer-size=65536'
             )
     
     def _create_all_pipelines(self) -> bool:

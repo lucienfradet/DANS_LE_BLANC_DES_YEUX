@@ -190,7 +190,7 @@ class AudioPlayback:
             return "both"  # No playback means effectively both channels muted
     
     def _create_playback_pipeline(self, port: int, name: str) -> (Optional[Gst.Pipeline], Optional[Gst.Element]):
-        """Create a persistent playback pipeline for the specified port."""
+        """Create a more robust playback pipeline with better state handling."""
         try:
             # Create a descriptive pipeline name
             pipeline_name = f"playback_{name}_{port}"
@@ -211,25 +211,26 @@ class AudioPlayback:
             
             # Create pipeline for receiving RTP audio and playing it
             # Include a panorama element that we can adjust dynamically
-            # Explicitly specify the output device and simplify caps
             pipeline_str = (
-                f"udpsrc port={port} timeout=0 do-timestamp=true buffer-size=65536 ! "
+                f"udpsrc port={port} timeout=0 buffer-size=65536 ! "
                 "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
-                "rtpjitterbuffer latency=50 ! "
+                "rtpjitterbuffer latency=100 ! "  # Increase latency for more buffer
                 "rtpL16depay ! "
+                "queue ! "  # Add queue after depay
                 "audioconvert ! "
-                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "  # Simplified caps
+                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
+                "queue ! "  # Add queue after panorama
                 "audioconvert ! "
-                "audioresample quality=10 ! "  # Add quality parameter
+                "audioresample quality=10 ! "
                 "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
             )
             
             # Add device-specific sink if we found the default sink
             if default_sink:
-                pipeline_str += f'pulsesink sync=false device="{default_sink}"'
+                pipeline_str += f'pulsesink sync=false async=false device="{default_sink}"'
             else:
-                pipeline_str += 'pulsesink sync=false'
+                pipeline_str += 'pulsesink sync=false async=false'
             
             print(f"Creating {name} playback pipeline: {pipeline_str}")
             
@@ -240,14 +241,29 @@ class AudioPlayback:
             # Get the panorama element for later adjustments
             panorama = pipeline.get_by_name(f"panorama_{name}")
             
-            # Start the pipeline in PLAYING state right away
+            # More careful state transitions
+            print(f"Setting {name} pipeline to NULL state first")
+            pipeline.set_state(Gst.State.NULL)
+            pipeline.get_state(500 * Gst.MSECOND)  # Wait for state change
+            
+            print(f"Setting {name} pipeline to READY state")
+            ret = pipeline.set_state(Gst.State.READY)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                print(f"Failed to set {name} pipeline to READY state")
+                pipeline.set_state(Gst.State.NULL)
+                return None, None
+            pipeline.get_state(500 * Gst.MSECOND)  # Wait for state change
+            
+            print(f"Setting {name} pipeline to PLAYING state")
             ret = pipeline.set_state(Gst.State.PLAYING)
             if ret == Gst.StateChangeReturn.FAILURE:
-                print(f"Failed to start {name} playback pipeline")
+                print(f"Failed to set {name} pipeline to PLAYING state")
                 pipeline.set_state(Gst.State.NULL)
                 return None, None
             
-            print(f"Successfully created and started {name} playback pipeline")
+            # No need to wait for PLAYING state as it might block
+            
+            print(f"Successfully created {name} playback pipeline")
             return pipeline, panorama
             
         except Exception as e:
