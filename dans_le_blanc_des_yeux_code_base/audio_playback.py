@@ -5,22 +5,23 @@ Handles playing audio with channel muting based on system state.
 playback logic:
 1. When both have pressure:
    - Play with LEFT channel muted
-   - Send personal mic (TX) to remote
+   - Receive from personal mic stream
 
 2. When remote has pressure and local doesn't:
    - Play with RIGHT channel muted
-   - Send global mic (USB) to remote
+   - Receive from global mic stream
 
 3. When local has pressure and remote doesn't:
    - Play with LEFT channel muted
-   - Send personal mic (TX) to remote
+   - Receive from personal mic stream
 
-4. When neither has pressure: No playback
+4. When neither has pressure: Both pipelines active but no audio received
 """
 
 """
-Minimal audio playback module for the Dans le Blanc des Yeux installation.
-Uses direct GStreamer pipeline with NO GLib main loop to avoid X11/OpenCV conflicts.
+Improved audio playback module for the Dans le Blanc des Yeux installation.
+Creates and maintains persistent pipelines for both stream types at startup,
+and dynamically adjusts panorama settings based on system state.
 """
 
 import os
@@ -42,10 +43,14 @@ RATE = 44100
 CHANNELS = 2
 
 class AudioPlayback:
-    """Handles audio playback with channel muting based on system state."""
+    """Handles audio playback with channel muting based on system state using persistent pipelines."""
     
     def __init__(self, audio_streamer: AudioStreamer):
         self.audio_streamer = audio_streamer
+        
+        # Get port numbers from streamer
+        self.GLOBAL_MIC_PORT = audio_streamer.GLOBAL_MIC_PORT
+        self.PERSONAL_MIC_PORT = audio_streamer.PERSONAL_MIC_PORT
         
         # Current playback state
         self.playback_state = "none"  # "none", "mute_left", "mute_right"
@@ -55,56 +60,79 @@ class AudioPlayback:
         self.playback_thread = None
         self.lock = threading.Lock()
         
-        # The actual playing pipeline
-        self.pipeline = None
-        self.app_source = None  # Add this for appsrc
+        # Pipeline objects - one for each port
+        self.personal_pipeline = None
+        self.global_pipeline = None
         
-        # Register for audio callbacks (needed for compatibility)
-        self.audio_streamer.register_personal_mic_callback(self._on_received_audio)
-        self.audio_streamer.register_global_mic_callback(self._on_received_audio)
+        # Panorama elements for dynamic channel muting
+        self.personal_panorama = None
+        self.global_panorama = None
+        
+        # Pipeline status
+        self.pipelines_created = False
         
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
         
-        print("Audio playback initialized")
+        print("Improved audio playback initialized with persistent pipelines")
     
     def start(self) -> bool:
-        """Start the audio playback system."""
-        print("Starting minimal audio playback...")
+        """Start the audio playback system with persistent pipelines."""
+        print("Starting improved audio playback with persistent pipelines...")
         self.running = True
         
-        # Start playback thread
-        self.playback_thread = threading.Thread(target=self._playback_loop)
+        # Create both pipelines at startup
+        success = self._create_playback_pipelines()
+        if not success:
+            print("Failed to create audio playback pipelines")
+            self.running = False
+            return False
+        
+        # Start playback monitoring thread
+        self.playback_thread = threading.Thread(target=self._playback_monitoring_loop)
         self.playback_thread.daemon = True
         self.playback_thread.start()
         
         # Update the playback state based on current system state
         self._update_playback_state()
         
-        print("Audio playback started")
+        print("Audio playback started with persistent pipelines")
         return True
     
     def stop(self) -> None:
-        """Stop the audio playback and clean up with improved pipeline teardown."""
+        """Stop the audio playback and clean up resources."""
         print("Stopping audio playback...")
         self.running = False
         
         # Stop playback if running
         with self.lock:
-            if self.pipeline:
-                print("Stopping pipeline with proper state transitions")
-                # Proper state transitions
-                self.pipeline.set_state(Gst.State.PAUSED)
-                self.pipeline.get_state(500 * Gst.MSECOND)  # 500ms timeout
-                self.pipeline.set_state(Gst.State.READY)
-                self.pipeline.get_state(500 * Gst.MSECOND)  # 500ms timeout
-                self.pipeline.set_state(Gst.State.NULL)
-                self.pipeline = None
-                self.app_source = None
+            # Proper shutdown of personal pipeline
+            if self.personal_pipeline:
+                print("Stopping personal pipeline with proper state transitions")
+                self.personal_pipeline.set_state(Gst.State.PAUSED)
+                self.personal_pipeline.get_state(500 * Gst.MSECOND)
+                self.personal_pipeline.set_state(Gst.State.READY)
+                self.personal_pipeline.get_state(500 * Gst.MSECOND)
+                self.personal_pipeline.set_state(Gst.State.NULL)
+                self.personal_pipeline = None
+                self.personal_panorama = None
+            
+            # Proper shutdown of global pipeline
+            if self.global_pipeline:
+                print("Stopping global pipeline with proper state transitions")
+                self.global_pipeline.set_state(Gst.State.PAUSED)
+                self.global_pipeline.get_state(500 * Gst.MSECOND)
+                self.global_pipeline.set_state(Gst.State.READY)
+                self.global_pipeline.get_state(500 * Gst.MSECOND)
+                self.global_pipeline.set_state(Gst.State.NULL)
+                self.global_pipeline = None
+                self.global_panorama = None
+            
+            self.pipelines_created = False
         
         # Wait for thread to finish
         if self.playback_thread and self.playback_thread.is_alive():
-            self.playback_thread.join(timeout=2.0)  # Longer timeout
+            self.playback_thread.join(timeout=2.0)
         
         print("Audio playback stopped")
     
@@ -143,6 +171,9 @@ class AudioPlayback:
         if old_state != self.playback_state:
             print(f"Playback state changed from {old_state} to {self.playback_state}")
             
+            # Update the panorama settings instead of rebuilding pipelines
+            self._update_panorama_settings()
+            
             # Update system state with audio state
             system_state.update_audio_state({
                 "audio_muted_channel": self._get_muted_channel_info()
@@ -157,163 +188,188 @@ class AudioPlayback:
         else:
             return "both"  # No playback means effectively both channels muted
     
-    def _on_received_audio(self, data: bytes) -> None:
-        """Handle received audio data (callback from audio_streamer)."""
-        # Only process if we're playing and pipeline exists
-        if self.playback_state != "none" and self.pipeline and self.app_source:
-            # The data is already clean (header removed by audio_streamer._receiver_loop)
-            try:
-                # Create a GStreamer buffer
-                buffer = Gst.Buffer.new_wrapped(data)
-                # Push to pipeline
-                self.app_source.emit("push-buffer", buffer)
-            except Exception as e:
-                print(f"Error pushing audio buffer: {e}")
-    
-    def _create_playback_pipeline(self) -> Optional[Gst.Pipeline]:
-        """Create a playback pipeline using appsrc for clean audio data."""
+    def _create_playback_pipeline(self, port: int, name: str) -> (Optional[Gst.Pipeline], Optional[Gst.Element]):
+        """Create a persistent playback pipeline for the specified port."""
         try:
-            # Create a unique pipeline name based on current time
-            pipeline_name = f"playback_{int(time.time())}"
+            # Create a descriptive pipeline name
+            pipeline_name = f"playback_{name}_{port}"
             
-            if self.playback_state == "none":
-                return None
-            
-            # Create pipeline with appsrc
+            # Create pipeline for receiving UDP audio and playing it
+            # Include a panorama element that we can adjust dynamically
+            # Using only compatible properties for your GStreamer version
             pipeline_str = (
-                "appsrc name=audio_source format=time is-live=true do-timestamp=true ! "
+                f"udpsrc port={port} timeout=0 do-timestamp=true ! "
+                "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
+                "rtpL16depay ! "
+                "audioconvert ! "
+                "audioresample ! "
                 "audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! "
-                "queue max-size-bytes=65536 ! "
-                "audioconvert ! audioresample ! "
+                "queue max-size-bytes=65536 leaky=downstream ! "
+                "audioconvert ! "
+                f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
+                "queue leaky=downstream ! "
+                "audioconvert ! "
+                "audioresample ! "
+                "pulsesink sync=false"
             )
             
-            # Add channel muting based on state
-            if self.playback_state == "mute_left":
-                pipeline_str += (
-                    "audioconvert ! "
-                    "audiopanorama method=simple panorama=1.0 ! "  # Move all sound to right channel
-                )
-            elif self.playback_state == "mute_right":
-                pipeline_str += (
-                    "audioconvert ! "
-                    "audiopanorama method=simple panorama=-1.0 ! "  # Move all sound to left channel
-                )
-            
-            # Add sink
-            pipeline_str += "pulsesink sync=false"
-            
-            print(f"Creating playback pipeline: {pipeline_str}")
+            print(f"Creating {name} playback pipeline: {pipeline_str}")
             
             # Create the pipeline
             pipeline = Gst.parse_launch(pipeline_str)
             pipeline.set_name(pipeline_name)
             
-            # Get the appsrc element
-            self.app_source = pipeline.get_by_name("audio_source")
-            # Configure the appsrc properties
-            self.app_source.set_property("caps", Gst.Caps.from_string(
-                "audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved"
-            ))
-            self.app_source.set_property("format", Gst.Format.TIME)
-            # Set to streaming mode (push-mode)
-            self.app_source.set_property("stream-type", 0)  # 0 = GST_APP_STREAM_TYPE_STREAM
+            # Get the panorama element for later adjustments
+            panorama = pipeline.get_by_name(f"panorama_{name}")
             
-            return pipeline
+            # Start the pipeline in PLAYING state right away
+            ret = pipeline.set_state(Gst.State.PLAYING)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                print(f"Failed to start {name} playback pipeline")
+                pipeline.set_state(Gst.State.NULL)
+                return None, None
+            
+            print(f"Successfully created and started {name} playback pipeline")
+            return pipeline, panorama
             
         except Exception as e:
-            print(f"Error creating playback pipeline: {e}")
-            self.app_source = None
-            return None
+            print(f"Error creating {name} playback pipeline: {e}")
+            return None, None
     
-    def _playback_loop(self) -> None:
-        """Main playback monitoring loop with improved pipeline management."""
+    def _create_playback_pipelines(self) -> bool:
+        """Create both playback pipelines at startup."""
+        try:
+            with self.lock:
+                # Create personal pipeline
+                self.personal_pipeline, self.personal_panorama = self._create_playback_pipeline(
+                    self.PERSONAL_MIC_PORT, "personal")
+                
+                if not self.personal_pipeline or not self.personal_panorama:
+                    print("Failed to create personal mic playback pipeline")
+                    return False
+                
+                # Create global pipeline
+                self.global_pipeline, self.global_panorama = self._create_playback_pipeline(
+                    self.GLOBAL_MIC_PORT, "global")
+                
+                if not self.global_pipeline or not self.global_panorama:
+                    print("Failed to create global mic playback pipeline")
+                    # Clean up personal pipeline
+                    self.personal_pipeline.set_state(Gst.State.NULL)
+                    self.personal_pipeline = None
+                    self.personal_panorama = None
+                    return False
+                
+                # Both pipelines created successfully
+                self.pipelines_created = True
+                return True
+                
+        except Exception as e:
+            print(f"Error creating playback pipelines: {e}")
+            self.pipelines_created = False
+            return False
+    
+    def _update_panorama_settings(self) -> None:
+        """Update panorama settings based on current playback state without recreating pipelines."""
+        try:
+            with self.lock:
+                if not self.pipelines_created:
+                    return
+                
+                if self.playback_state == "mute_left":
+                    # Move all sound to right channel
+                    if self.personal_panorama:
+                        self.personal_panorama.set_property("panorama", 1.0)
+                    if self.global_panorama:
+                        self.global_panorama.set_property("panorama", 1.0)
+                    print("Updated panorama: Muted LEFT channel (panorama=1.0)")
+                    
+                elif self.playback_state == "mute_right":
+                    # Move all sound to left channel
+                    if self.personal_panorama:
+                        self.personal_panorama.set_property("panorama", -1.0)
+                    if self.global_panorama:
+                        self.global_panorama.set_property("panorama", -1.0)
+                    print("Updated panorama: Muted RIGHT channel (panorama=-1.0)")
+                    
+                elif self.playback_state == "none":
+                    # Mute both channels by setting panorama to extreme value
+                    # (this is a hack, ideally we'd use a mute property)
+                    if self.personal_panorama:
+                        self.personal_panorama.set_property("panorama", -10.0)
+                    if self.global_panorama:
+                        self.global_panorama.set_property("panorama", -10.0)
+                    print("Updated panorama: Effectively muted both channels")
+                
+        except Exception as e:
+            print(f"Error updating panorama settings: {e}")
+    
+    def _playback_monitoring_loop(self) -> None:
+        """Monitor the playback pipelines and ensure they're running correctly."""
         print("Playback monitoring loop started")
         
-        last_state = None
-        pipeline = None
+        # Track consecutive failures to avoid spam
+        consecutive_failures = 0
+        max_consecutive_failures = 3
         
         while self.running:
             try:
-                # Check if state has changed
-                current_state = self.playback_state
-                
-                if current_state != last_state:
-                    print(f"State changed from {last_state} to {current_state}, recreating pipeline")
+                # Check pipeline states
+                with self.lock:
+                    if self.pipelines_created:
+                        # Only check complete state - includes pending state changes
+                        personal_state, pending_personal = self.personal_pipeline.get_state(0)[1:3]
+                        global_state, pending_global = self.global_pipeline.get_state(0)[1:3]
+                        
+                        # Only try to fix if not in a pending state change
+                        if pending_personal == Gst.State.VOID_PENDING and personal_state != Gst.State.PLAYING:
+                            if consecutive_failures < max_consecutive_failures:
+                                print(f"Personal pipeline not PLAYING (state={personal_state}), trying to restart...")
+                                ret = self.personal_pipeline.set_state(Gst.State.PLAYING)
+                                if ret == Gst.StateChangeReturn.FAILURE:
+                                    consecutive_failures += 1
+                                    print(f"Failed to set personal pipeline to PLAYING, attempt {consecutive_failures}/{max_consecutive_failures}")
+                                else:
+                                    print("Successfully requested state change for personal pipeline")
+                            elif consecutive_failures == max_consecutive_failures:
+                                print("Giving up on restarting personal pipeline after multiple failures")
+                                consecutive_failures += 1
+                        
+                        if pending_global == Gst.State.VOID_PENDING and global_state != Gst.State.PLAYING:
+                            if consecutive_failures < max_consecutive_failures:
+                                print(f"Global pipeline not PLAYING (state={global_state}), trying to restart...")
+                                ret = self.global_pipeline.set_state(Gst.State.PLAYING)
+                                if ret == Gst.StateChangeReturn.FAILURE:
+                                    consecutive_failures += 1
+                                    print(f"Failed to set global pipeline to PLAYING, attempt {consecutive_failures}/{max_consecutive_failures}")
+                                else:
+                                    print("Successfully requested state change for global pipeline")
+                            elif consecutive_failures == max_consecutive_failures:
+                                print("Giving up on restarting global pipeline after multiple failures")
+                                consecutive_failures += 1
+                        
+                        # Reset counter if both pipelines are in desired state
+                        if personal_state == Gst.State.PLAYING and global_state == Gst.State.PLAYING:
+                            if consecutive_failures > 0:
+                                print("Both pipelines now in PLAYING state")
+                                consecutive_failures = 0
                     
-                    with self.lock:
-                        # Proper pipeline cleanup with state transitions
-                        if pipeline:
-                            print("Stopping existing pipeline...")
-                            # First pause, then ready, then null (proper state machine)
-                            pipeline.set_state(Gst.State.PAUSED)
-                            # Wait for state change to complete with timeout
-                            pipeline.get_state(Gst.CLOCK_TIME_NONE)
-                            
-                            pipeline.set_state(Gst.State.READY)
-                            pipeline.get_state(Gst.CLOCK_TIME_NONE)
-                            
-                            pipeline.set_state(Gst.State.NULL)
-                            pipeline.get_state(Gst.CLOCK_TIME_NONE)
-                            
-                            # Clear element references
-                            self.app_source = None
-                            pipeline = None
-                            self.pipeline = None
-                            
-                            # Add delay to allow resources to be released
-                            time.sleep(0.5)
-                            
-                            # Force garbage collection
-                            import gc
-                            gc.collect()
-                        
-                        # Create new pipeline if needed
-                        if current_state != "none":
-                            try:
-                                pipeline = self._create_playback_pipeline()
-                                if pipeline:
-                                    print("Starting new pipeline...")
-                                    # Gradual state transition: NULL -> READY -> PAUSED -> PLAYING
-                                    ret = pipeline.set_state(Gst.State.READY)
-                                    if ret == Gst.StateChangeReturn.FAILURE:
-                                        raise Exception("Failed to reach READY state")
-                                    pipeline.get_state(Gst.CLOCK_TIME_NONE)
-                                    
-                                    ret = pipeline.set_state(Gst.State.PAUSED)
-                                    if ret == Gst.StateChangeReturn.FAILURE:
-                                        raise Exception("Failed to reach PAUSED state")
-                                    pipeline.get_state(Gst.CLOCK_TIME_NONE)
-                                    
-                                    ret = pipeline.set_state(Gst.State.PLAYING)
-                                    if ret == Gst.StateChangeReturn.FAILURE:
-                                        raise Exception("Failed to reach PLAYING state")
-                                    
-                                    # Save only after successful start
-                                    self.pipeline = pipeline
-                                    print(f"Successfully started playback in {current_state} mode")
-                            except Exception as e:
-                                print(f"Pipeline creation/start failed: {e}")
-                                if pipeline:
-                                    pipeline.set_state(Gst.State.NULL)
-                                pipeline = None
-                                self.pipeline = None
-                                self.app_source = None
-                        
-                        last_state = current_state
+                    # Recreate pipelines if needed, but not too frequently
+                    elif self.running and consecutive_failures < max_consecutive_failures:
+                        print("Pipelines not created, attempting to recreate...")
+                        success = self._create_playback_pipelines()
+                        if success:
+                            # Update panorama settings based on current state
+                            self._update_panorama_settings()
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
                 
-                # Brief sleep to avoid CPU usage
-                time.sleep(0.5)
+                # Sleep to avoid consuming too much CPU
+                time.sleep(2.0)  # Increased sleep time to reduce spam
                 
             except Exception as e:
-                print(f"Error in playback loop: {e}")
-                time.sleep(1.0)
-        
-        # Cleanup pipeline at exit - with proper state transitions
-        if pipeline:
-            pipeline.set_state(Gst.State.PAUSED)
-            pipeline.get_state(500 * Gst.MSECOND)  # 500ms timeout
-            pipeline.set_state(Gst.State.READY)
-            pipeline.get_state(500 * Gst.MSECOND)  # 500ms timeout
-            pipeline.set_state(Gst.State.NULL)
+                print(f"Error in playback monitoring loop: {e}")
+                time.sleep(2.0)
         
         print("Playback monitoring loop stopped")

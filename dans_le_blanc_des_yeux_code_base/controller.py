@@ -97,15 +97,16 @@ def input_monitor():
             time.sleep(0.5)
 
 def signal_handler(sig, frame):
-    """Handle shutdown signals gracefully."""
+    """Handle shutdown signals gracefully with updated audio component handling."""
     global stop_input_thread
     print("\nShutting down... Please wait.")
     stop_input_thread = True
     
     # Stop all components in the correct order
-    # First audio components
+    # First audio components - playback first, then streaming
     if 'audio_playback' in globals() and audio_playback is not None:
         try:
+            print("Stopping audio playback...")
             audio_playback.stop()
             print("Audio playback stopped successfully")
             # Add small delay to ensure audio resources are released
@@ -115,6 +116,7 @@ def signal_handler(sig, frame):
     
     if 'audio_streamer' in globals() and audio_streamer is not None:
         try:
+            print("Stopping audio streamer...")
             audio_streamer.stop()
             print("Audio streamer stopped successfully")
             # Add small delay to ensure audio resources are released
@@ -122,7 +124,7 @@ def signal_handler(sig, frame):
         except Exception as e:
             print(f"Error stopping audio streamer: {e}")
     
-    # Stop video components
+    # Stop video components (unchanged)
     if 'video_display' in globals() and video_display is not None:
         try:
             video_display.stop()
@@ -322,7 +324,7 @@ def initialize_video_components(remote_ip, config, disable_video):
     return camera_manager, video_streamer, video_display
 
 def initialize_audio_components(remote_ip, config, disable_audio):
-    """Initialize audio components if not disabled."""
+    """Initialize audio components if not disabled using the new persistent pipeline approach."""
     global audio_streamer, audio_playback
     
     # Default values
@@ -362,7 +364,7 @@ def initialize_audio_components(remote_ip, config, disable_audio):
         print(f"PulseAudio check/start failed: {e}")
     
     # Initialize audio streamer (must be started first)
-    print("Starting audio streamer...")
+    print("Starting persistent audio streamer...")
     try:
         audio_streamer = AudioStreamer(remote_ip)
         if not audio_streamer.start():
@@ -377,10 +379,15 @@ def initialize_audio_components(remote_ip, config, disable_audio):
     time.sleep(0.5)
     
     # Initialize audio playback (after streamer is ready)
-    print("Starting audio playback...")
+    print("Starting persistent audio playback...")
     try:
         audio_playback = AudioPlayback(audio_streamer)
-        audio_playback.start()
+        if not audio_playback.start():
+            print("Warning: Failed to start audio playback. Audio functionality may be limited.")
+            # If playback fails, stop the streamer
+            if audio_streamer:
+                audio_streamer.stop()
+            return None, None
     except Exception as e:
         print(f"Error starting audio playback: {e}")
         print("Audio playback functionality will be limited")
@@ -388,6 +395,7 @@ def initialize_audio_components(remote_ip, config, disable_audio):
             audio_streamer.stop()
         return None, None
     
+    print("Audio components successfully initialized with persistent pipelines")
     return audio_streamer, audio_playback
 
 if __name__ == "__main__":
@@ -423,11 +431,12 @@ if __name__ == "__main__":
         # Keep references to avoid garbage collection
         osc_handler, serial_handler, motor_controller = core_components
         
-        # Initialize audio first (important for resource management)
+        # Initialize audio first with new persistent pipeline implementation
         if not args.disable_audio:
+            print("Initializing persistent audio components...")
             audio_streamer, audio_playback = initialize_audio_components(remote_ip, config, args.disable_audio)
-            # Add delay to allow audio components to stabilize
-            time.sleep(1)
+            # Add longer delay to allow audio components to initialize properly
+            time.sleep(1.5)
         
         # Initialize video components after audio
         if not args.disable_video:

@@ -12,12 +12,13 @@ streaming logic:
 3. When local has pressure and remote doesn't:
    - Stream personal mic (TX) to remote device
    
-4. When neither has pressure: No streaming
+4. When neither has pressure: No streaming (both pipelines paused)
 """
 
 """
-Minimal audio streaming module for the Dans le Blanc des Yeux installation.
-Uses direct GStreamer pipeline with NO GLib main loop to avoid X11/OpenCV conflicts.
+Improved audio streaming module for the Dans le Blanc des Yeux installation.
+Creates and maintains persistent pipelines for both mic types at startup,
+and pauses/unpauses the appropriate pipeline based on system state.
 """
 
 import os
@@ -41,16 +42,20 @@ Gst.init(None)
 RATE = 44100
 CHANNELS = 2
 CHUNK_SIZE = 1024  # Frames per buffer
-AUDIO_PORT = 6000  # Base port for audio streaming
+
+# Define ports for different mic types
+GLOBAL_MIC_PORT = 6000
+PERSONAL_MIC_PORT = 6001
 
 class AudioStreamer:
-    """Handles audio streaming between devices using minimal GStreamer pipelines."""
+    """Handles audio streaming between devices using persistent GStreamer pipelines."""
     
     def __init__(self, remote_ip: str):
         self.remote_ip = remote_ip
         
-        # Make AUDIO_PORT accessible as an instance variable for AudioPlayback to reference
-        self.AUDIO_PORT = AUDIO_PORT
+        # Make ports accessible as instance variables
+        self.GLOBAL_MIC_PORT = GLOBAL_MIC_PORT
+        self.PERSONAL_MIC_PORT = PERSONAL_MIC_PORT
         
         # Audio device names (will be loaded from config)
         self.personal_mic_name = "TX 96Khz"
@@ -59,17 +64,24 @@ class AudioStreamer:
         # Streaming state
         self.current_mic_sending = None  # "personal" or "global" or None
         
+        # Pipeline objects
+        self.personal_pipeline = None
+        self.global_pipeline = None
+        
+        # Pipeline states
+        self.personal_pipeline_active = False
+        self.global_pipeline_active = False
+        
         # Threading
         self.running = False
         self.threads = []
         self.lock = threading.Lock()
         
-        # Socket for sending audio
-        self.send_socket = None
-        
-        # UDP receive socket and thread
-        self.receive_socket = None
-        self.receiver_thread = None
+        # UDP receive sockets and threads
+        self.receive_personal_socket = None
+        self.receive_global_socket = None
+        self.receiver_personal_thread = None
+        self.receiver_global_thread = None
         
         # Callbacks for received audio
         self.on_personal_mic_received = None
@@ -187,36 +199,52 @@ class AudioStreamer:
     def _setup_sockets(self):
         """Set up UDP sockets for audio transmission."""
         try:
-            # Create a UDP socket for sending
-            self.send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+            # Create UDP sockets for receiving on both ports
+            self.receive_personal_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.receive_personal_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.receive_personal_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            self.receive_personal_socket.bind(("0.0.0.0", PERSONAL_MIC_PORT))
+            self.receive_personal_socket.settimeout(0.5)  # Set a timeout for responsive shutdown
             
-            # Create a UDP socket for receiving
-            self.receive_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.receive_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.receive_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
-            self.receive_socket.bind(("0.0.0.0", AUDIO_PORT))
-            self.receive_socket.settimeout(0.5)  # Set a timeout for responsive shutdown
+            self.receive_global_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.receive_global_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.receive_global_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            self.receive_global_socket.bind(("0.0.0.0", GLOBAL_MIC_PORT))
+            self.receive_global_socket.settimeout(0.5)  # Set a timeout for responsive shutdown
             
             print("UDP sockets created for audio transmission")
         except Exception as e:
             print(f"Error setting up audio sockets: {e}")
     
     def start(self) -> bool:
-        """Start the audio streaming system."""
-        print("Starting minimal audio streamer...")
+        """Start the audio streaming system with persistent pipelines."""
+        print("Starting improved audio streamer with persistent pipelines...")
         self.running = True
         
-        # Start receiver thread
-        self.receiver_thread = threading.Thread(target=self._receiver_loop)
-        self.receiver_thread.daemon = True
-        self.receiver_thread.start()
-        self.threads.append(self.receiver_thread)
+        # Create both pipelines at startup (but initially paused)
+        success = self._create_all_pipelines()
+        if not success:
+            print("Failed to create audio streaming pipelines")
+            self.running = False
+            return False
         
-        # Check initial state to see if we need to start streaming right away
+        # Start receiver threads for both ports
+        self.receiver_personal_thread = threading.Thread(target=self._receiver_loop, 
+                                                        args=(self.receive_personal_socket, True))
+        self.receiver_personal_thread.daemon = True
+        self.receiver_personal_thread.start()
+        self.threads.append(self.receiver_personal_thread)
+        
+        self.receiver_global_thread = threading.Thread(target=self._receiver_loop, 
+                                                      args=(self.receive_global_socket, False))
+        self.receiver_global_thread.daemon = True
+        self.receiver_global_thread.start()
+        self.threads.append(self.receiver_global_thread)
+        
+        # Check initial state to update which pipeline should be active
         self._update_streaming_based_on_state()
         
-        print("Audio streamer started")
+        print("Audio streamer started with persistent pipelines")
         return True
     
     def stop(self) -> None:
@@ -224,8 +252,23 @@ class AudioStreamer:
         print("Stopping audio streamer...")
         self.running = False
         
-        # Stop any active streaming
-        self._stop_streaming()
+        # Pause both pipelines
+        with self.lock:
+            if self.personal_pipeline:
+                self.personal_pipeline.set_state(Gst.State.PAUSED)
+                self.personal_pipeline.set_state(Gst.State.READY)
+                self.personal_pipeline.set_state(Gst.State.NULL)
+                self.personal_pipeline = None
+            
+            if self.global_pipeline:
+                self.global_pipeline.set_state(Gst.State.PAUSED)
+                self.global_pipeline.set_state(Gst.State.READY)
+                self.global_pipeline.set_state(Gst.State.NULL)
+                self.global_pipeline = None
+        
+        # Reset pipeline states
+        self.personal_pipeline_active = False
+        self.global_pipeline_active = False
         
         # Wait for threads to finish
         for thread in self.threads:
@@ -233,17 +276,15 @@ class AudioStreamer:
                 thread.join(timeout=1.0)
         
         # Close sockets
-        if self.send_socket:
-            try:
-                self.send_socket.close()
-            except:
-                pass
+        for socket_obj in [self.receive_personal_socket, self.receive_global_socket]:
+            if socket_obj:
+                try:
+                    socket_obj.close()
+                except:
+                    pass
         
-        if self.receive_socket:
-            try:
-                self.receive_socket.close()
-            except:
-                pass
+        self.receive_personal_socket = None
+        self.receive_global_socket = None
         
         print("Audio streamer stopped")
     
@@ -265,28 +306,60 @@ class AudioStreamer:
         local_state = system_state.get_local_state()
         remote_state = system_state.get_remote_state()
         
+        # Default to all pipelines paused
+        should_personal_be_active = False
+        should_global_be_active = False
+        
         # Only proceed if remote is connected
-        if not remote_state.get("connected", False):
-            self._stop_streaming()
-            return
+        if remote_state.get("connected", False):
+            # Case 1: Both have pressure - stream personal mic (TX)
+            if local_state.get("pressure", False) and remote_state.get("pressure", False):
+                should_personal_be_active = True
+            
+            # Case 2: Remote has pressure but local doesn't - stream global mic (USB)
+            elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
+                should_global_be_active = True
+            
+            # Case 3: Local has pressure but remote doesn't - stream personal mic (TX)
+            elif local_state.get("pressure", False) and not remote_state.get("pressure", False):
+                should_personal_be_active = True
         
-        # Case 1: Both have pressure - stream personal mic (TX)
-        if local_state.get("pressure", False) and remote_state.get("pressure", False):
-            self._start_streaming("personal")
+        # Update pipeline states based on should_X_be_active flags
+        with self.lock:
+            # Update personal mic pipeline
+            if should_personal_be_active != self.personal_pipeline_active:
+                if should_personal_be_active:
+                    print("Activating personal mic streaming")
+                    if self.personal_pipeline:
+                        self.personal_pipeline.set_state(Gst.State.PLAYING)
+                else:
+                    print("Pausing personal mic streaming")
+                    if self.personal_pipeline:
+                        self.personal_pipeline.set_state(Gst.State.PAUSED)
+                
+                self.personal_pipeline_active = should_personal_be_active
+            
+            # Update global mic pipeline
+            if should_global_be_active != self.global_pipeline_active:
+                if should_global_be_active:
+                    print("Activating global mic streaming")
+                    if self.global_pipeline:
+                        self.global_pipeline.set_state(Gst.State.PLAYING)
+                else:
+                    print("Pausing global mic streaming")
+                    if self.global_pipeline:
+                        self.global_pipeline.set_state(Gst.State.PAUSED)
+                
+                self.global_pipeline_active = should_global_be_active
         
-        # Case 2: Remote has pressure but local doesn't - stream global mic (USB)
-        elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
-            self._start_streaming("global")
-        
-        # Case 3: Local has pressure but remote doesn't - stream personal mic (TX)
-        elif local_state.get("pressure", False) and not remote_state.get("pressure", False):
-            self._start_streaming("personal")
-        
-        # Case 4: No pressure on either - no streaming
-        else:
-            self._stop_streaming()
+        # Update system state with audio info
+        system_state.update_audio_state({
+            "audio_sending": should_personal_be_active or should_global_be_active,
+            "audio_mic": "personal" if should_personal_be_active else 
+                         "global" if should_global_be_active else "None"
+        })
     
-    def _create_pipeline_str(self, mic_type: str) -> str:
+    def _create_pipeline_str(self, mic_type: str, port: int) -> str:
         """Create a pipeline string for the specified mic type using device IDs when available."""
         if mic_type == "personal":
             # For PulseAudio, we can use the device number directly
@@ -300,7 +373,7 @@ class AudioStreamer:
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
                 'audio/x-raw, format=S16LE ! '
-                'appsink name=sink emit-signals=true sync=false'
+                'udpsink host=' + self.remote_ip + ' port=' + str(port) + ' sync=false'
             )
         else:  # global
             if self.global_mic_id:
@@ -313,130 +386,46 @@ class AudioStreamer:
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
                 'audio/x-raw, format=S16LE ! '
-                'appsink name=sink emit-signals=true sync=false'
+                'udpsink host=' + self.remote_ip + ' port=' + str(port) + ' sync=false'
             )
     
-    def _start_streaming(self, mic_type: str) -> bool:
-        """Start streaming from specified mic to remote device using non-blocking approach."""
-        # If already streaming the correct mic, do nothing
-        if self.current_mic_sending == mic_type:
-            return True
-            
-        # Stop any current streaming
-        self._stop_streaming()
-        
+    def _create_all_pipelines(self) -> bool:
+        """Create both streaming pipelines but initially set them to PAUSED state."""
         try:
-            # Start sender thread to avoid blocking the main thread
-            sender_thread = threading.Thread(
-                target=self._sender_loop, 
-                args=(mic_type,)
-            )
-            sender_thread.daemon = True
-            sender_thread.start()
-            self.threads.append(sender_thread)
+            # Create personal mic pipeline
+            personal_pipeline_str = self._create_pipeline_str("personal", PERSONAL_MIC_PORT)
+            print(f"Creating personal mic pipeline: {personal_pipeline_str}")
+            self.personal_pipeline = Gst.parse_launch(personal_pipeline_str)
             
-            self.current_mic_sending = mic_type
-            print(f"Started {mic_type} mic stream to {self.remote_ip}:{AUDIO_PORT}")
+            # Set to READY state initially (prepare but don't start)
+            ret = self.personal_pipeline.set_state(Gst.State.READY)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                print("Failed to set personal mic pipeline to READY state")
+                return False
             
-            # Update system state with audio info
-            system_state.update_audio_state({
-                "audio_sending": True,
-                "audio_mic": mic_type
-            })
+            # Create global mic pipeline
+            global_pipeline_str = self._create_pipeline_str("global", GLOBAL_MIC_PORT)
+            print(f"Creating global mic pipeline: {global_pipeline_str}")
+            self.global_pipeline = Gst.parse_launch(global_pipeline_str)
             
+            # Set to READY state initially (prepare but don't start)
+            ret = self.global_pipeline.set_state(Gst.State.READY)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                print("Failed to set global mic pipeline to READY state")
+                return False
+            
+            print("Successfully created both audio streaming pipelines")
             return True
             
         except Exception as e:
-            print(f"Error starting {mic_type} stream: {e}")
-            self._stop_streaming()
+            print(f"Error creating audio streaming pipelines: {e}")
             return False
     
-    def _sender_loop(self, mic_type: str) -> None:
-        """Capture and send audio from the specified mic type."""
-        print(f"Starting {mic_type} sender loop")
-        
-        try:
-            # Create pipeline based on mic type
-            pipeline_str = self._create_pipeline_str(mic_type)
-            print(f"Using pipeline: {pipeline_str}")
-            
-            pipeline = Gst.parse_launch(pipeline_str)
-            sink = pipeline.get_by_name("sink")
-            
-            # Start the pipeline
-            pipeline.set_state(Gst.State.PLAYING)
-            
-            seq_num = 0
-            
-            while self.running and self.current_mic_sending == mic_type:
-                try:
-                    # Pull a sample from the sink - using standard pull_sample
-                    # with a timeout implemented using a separate check
-                    sample = None
-                    start_time = time.time()
-                    timeout = 0.1  # 100ms timeout
-                    
-                    while time.time() - start_time < timeout:
-                        # Non-blocking check if sample is available
-                        sample = sink.emit("pull-sample")
-                        if sample:
-                            break
-                        time.sleep(0.01)  # Small sleep to avoid busy wait
-                    
-                    if not sample:
-                        continue
-                    
-                    # Extract the audio data
-                    buffer = sample.get_buffer()
-                    success, map_info = buffer.map(Gst.MapFlags.READ)
-                    
-                    if success:
-                        # Get the audio data
-                        audio_data = bytes(map_info.data)
-                        buffer.unmap(map_info)
-                        
-                        # Add mic type identifier (0 for personal, 1 for global)
-                        mic_id_byte = b'\x00' if mic_type == "personal" else b'\x01'
-                        
-                        # Add sequence number
-                        packet = seq_num.to_bytes(4, byteorder='big') + mic_id_byte + audio_data
-                        
-                        # Send to remote
-                        if self.send_socket:
-                            self.send_socket.sendto(packet, (self.remote_ip, AUDIO_PORT))
-                        
-                        seq_num = (seq_num + 1) % 65536
-                    
-                except Exception as e:
-                    if self.running and self.current_mic_sending == mic_type:
-                        print(f"Error in {mic_type} sender loop: {e}")
-                        time.sleep(0.5)
-            
-            # Stop the pipeline
-            pipeline.set_state(Gst.State.NULL)
-            
-        except Exception as e:
-            print(f"Error in {mic_type} sender thread: {e}")
-        
-        print(f"{mic_type} sender loop ended")
-    
-    def _stop_streaming(self) -> None:
-        """Stop all active streaming."""
-        old_mic = self.current_mic_sending
-        self.current_mic_sending = None
-        
-        if old_mic:
-            print("All streams stopped")
-        
-        # Update system state
-        system_state.update_audio_state({
-            "audio_sending": False,
-            "audio_mic": "None"
-        })
-    
-    def _receiver_loop(self) -> None:
-        """Receive audio from remote device."""
-        print(f"Starting audio receiver on port {AUDIO_PORT}")
+    def _receiver_loop(self, socket_obj, is_personal: bool) -> None:
+        """Receive audio from remote device on the specified socket."""
+        mic_type = "personal" if is_personal else "global"
+        port = PERSONAL_MIC_PORT if is_personal else GLOBAL_MIC_PORT
+        print(f"Starting {mic_type} audio receiver on port {port}")
         
         buffer = {}  # Store packets by sequence number for reordering
         next_seq = 0  # Next expected sequence number
@@ -446,7 +435,7 @@ class AudioStreamer:
             while self.running:
                 try:
                     # Receive packet with timeout
-                    data, addr = self.receive_socket.recvfrom(65536)
+                    data, addr = socket_obj.recvfrom(65536)
                     
                     if len(data) < 5:  # Need 4 bytes for seq num + 1 for mic ID
                         continue
@@ -464,10 +453,11 @@ class AudioStreamer:
                         # Get the next packet
                         mic_type_byte, audio_data = buffer.pop(next_seq)
                         
-                        # Call appropriate callback based on mic type
-                        if mic_type_byte == b'\x00' and self.on_personal_mic_received:
+                        # Call appropriate callback based on received data
+                        # and which receiver thread we're in
+                        if is_personal and self.on_personal_mic_received:
                             self.on_personal_mic_received(audio_data)
-                        elif mic_type_byte == b'\x01' and self.on_global_mic_received:
+                        elif not is_personal and self.on_global_mic_received:
                             self.on_global_mic_received(audio_data)
                         
                         next_seq += 1
@@ -489,7 +479,7 @@ class AudioStreamer:
                     pass
                 except Exception as e:
                     if self.running:
-                        print(f"Error in audio receiver: {e}")
+                        print(f"Error in {mic_type} audio receiver: {e}")
                         time.sleep(0.5)
         finally:
-            print("Audio receiver stopped")
+            print(f"{mic_type} audio receiver stopped")
