@@ -1,13 +1,13 @@
 """
 Thread-safe state management for the Dans le Blanc des Yeux project.
 Uses a singleton pattern to ensure a single state instance across the application.
-Includes pressure state debouncing to prevent rapid toggling.
+debounce v3
 """
 
 import threading
 import configparser
-import time
-from typing import Dict, Any, List, Callable, Optional, Tuple
+import time  # Added import for timestamp
+from typing import Dict, Any, List, Callable
 
 class SystemState:
     """Thread-safe singleton class to manage system state."""
@@ -41,10 +41,6 @@ class SystemState:
             "connected": False  # Track if remote device is connected
         }
         
-        # Track pressure state changes for debouncing
-        self._pending_local_pressure = None  # (value, timestamp) or None if no pending change
-        self._pressure_debounce_time = 1.0  # Default value in seconds
-        
         # Store last motor command for visualization
         self._last_motor_command = {
             "y": 0,
@@ -59,98 +55,72 @@ class SystemState:
         # Observers for state changes
         self._observers = []
         
-        # Start debounce monitor thread
-        self._running = True
-        self._debounce_thread = threading.Thread(target=self._monitor_debounce)
-        self._debounce_thread.daemon = True
-        self._debounce_thread.start()
-    
-    def _monitor_debounce(self):
-        """
-        Background thread that monitors for pressure state changes
-        and applies debounce before notifying observers.
-        """
-        while self._running:
-            try:
-                # Check for pending local pressure changes
-                with self._state_lock:
-                    if self._pending_local_pressure:
-                        value, timestamp = self._pending_local_pressure
-                        current_time = time.time()
-                        
-                        # Check if debounce time has passed
-                        if current_time - timestamp >= self._pressure_debounce_time:
-                            # Apply the pressure change
-                            old_value = self._local_device["pressure"]
-                            if old_value != value:
-                                print(f"Debounce complete: Local pressure changed to {value} after {self._pressure_debounce_time}s")
-                                self._local_device["pressure"] = value
-                                self._pending_local_pressure = None
-                                
-                                # Notify observers AFTER state is updated and debounce is complete
-                                self._notify_observers("local")
-            except Exception as e:
-                print(f"Error in debounce monitor: {e}")
-            
-            # Check every 100ms (adjust as needed for responsiveness)
-            time.sleep(0.1)
+        # Pressure debounce settings
+        self._pressure_debounce_time = 1.0  # Default debounce time in seconds
+        self._pressure_last_change_time = 0  # Timestamp of last pressure state change
+        self._pressure_pending_value = None  # Pending pressure value awaiting debounce
     
     def get_local_state(self) -> Dict[str, Any]:
         """Get a copy of the local device state."""
         with self._state_lock:
-            result = self._local_device.copy()
-            
-            # If there's a pending pressure change that hasn't passed debounce,
-            # return the current actual value, not the pending one
-            return result
+            return self._local_device.copy()
     
     def get_remote_state(self) -> Dict[str, Any]:
         """Get a copy of the remote device state."""
         with self._state_lock:
             return self._remote_device.copy()
     
-    def update_local_state(self, data: Dict[str, Any]) -> None:
-        """
-        Update the local device state with debounce for pressure changes.
-        Other state changes are applied immediately.
-        """
+    def set_pressure_debounce_time(self, debounce_time: float) -> None:
+        """Set the pressure debounce time in seconds."""
         with self._state_lock:
-            changed = False
-            
-            # Handle pressure changes with debounce
-            if "pressure" in data:
-                new_pressure = data["pressure"]
-                current_pressure = self._local_device["pressure"]
-                
-                # Only start debounce if value actually changes
-                if new_pressure != current_pressure:
-                    # Start the debounce timer
-                    self._pending_local_pressure = (new_pressure, time.time())
-                    print(f"Local pressure changing to {new_pressure} (debounce timer started for {self._pressure_debounce_time}s)")
-                
-                # Remove "pressure" from data dict so we don't process it twice
-                del data["pressure"]
-            
-            # All other state values are updated immediately
-            for key, value in data.items():
-                if key in self._local_device and self._local_device[key] != value:
-                    self._local_device[key] = value
-                    changed = True
+            self._pressure_debounce_time = max(0.0, float(debounce_time))
+            print(f"Pressure debounce time set to {self._pressure_debounce_time} seconds")
+    
+    def update_local_state(self, data: Dict[str, Any]) -> None:
+        """Update the local device state with debounce for pressure changes."""
+        current_time = time.time()
+        changed = False
         
-        # Notify observers of non-pressure changes
+        # Handle pressure with debounce
+        if "pressure" in data:
+            new_pressure = data["pressure"]
+            with self._state_lock:
+                # If this would be a change in pressure state
+                if self._local_device["pressure"] != new_pressure:
+                    # First time seeing this pressure value or resetting during debounce
+                    if self._pressure_pending_value != new_pressure:
+                        self._pressure_pending_value = new_pressure
+                        self._pressure_last_change_time = current_time
+                        print(f"Pending pressure change to {new_pressure}, waiting for debounce ({self._pressure_debounce_time}s)")
+                    # If it's been stable for the debounce period, apply it
+                    elif current_time - self._pressure_last_change_time >= self._pressure_debounce_time:
+                        print(f"Applying debounced pressure change to {new_pressure}")
+                        self._local_device["pressure"] = new_pressure
+                        self._pressure_pending_value = None
+                        changed = True
+                
+                # Process other state changes immediately
+                for key, value in data.items():
+                    if key != "pressure" and key in self._local_device and self._local_device[key] != value:
+                        self._local_device[key] = value
+                        changed = True
+        else:
+            # No pressure in data, process normally
+            with self._state_lock:
+                for key, value in data.items():
+                    if key in self._local_device and self._local_device[key] != value:
+                        self._local_device[key] = value
+                        changed = True
+        
         if changed:
             self._notify_observers("local")
     
     def update_remote_state(self, data: Dict[str, Any]) -> None:
-        """Update the remote device state (no debounce for remote changes)."""
+        """Update the remote device state."""
         with self._state_lock:
             changed = False
-            
-            # Update all state data
             for key, value in data.items():
                 if key in self._remote_device and self._remote_device[key] != value:
-                    if key == "pressure":
-                        print(f"Remote pressure changed to {value} (accepted immediately)")
                     self._remote_device[key] = value
                     changed = True
         
@@ -215,31 +185,6 @@ class SystemState:
                 }
             return self._audio_state.copy()
     
-    def set_pressure_debounce_time(self, debounce_time: float) -> None:
-        """Set the debounce time for pressure changes."""
-        with self._state_lock:
-            self._pressure_debounce_time = max(0.0, float(debounce_time))
-        print(f"Set pressure debounce time to {self._pressure_debounce_time} seconds")
-    
-    def get_pressure_debounce_time(self) -> float:
-        """Get the current pressure debounce time."""
-        with self._state_lock:
-            return self._pressure_debounce_time
-    
-    def has_pending_pressure_change(self) -> bool:
-        """Check if there's a pending pressure change waiting for debounce."""
-        with self._state_lock:
-            return self._pending_local_pressure is not None
-    
-    def get_pending_pressure_info(self) -> Optional[Tuple[bool, float]]:
-        """Get information about any pending pressure change."""
-        with self._state_lock:
-            if self._pending_local_pressure:
-                value, timestamp = self._pending_local_pressure
-                time_waiting = time.time() - timestamp
-                return (value, time_waiting)
-            return None
-    
     def add_observer(self, callback: Callable[[str], None]) -> None:
         """Add an observer to be notified of state changes."""
         self._observers.append(callback)
@@ -253,12 +198,6 @@ class SystemState:
         """Notify all observers of a state change."""
         for observer in self._observers:
             observer(changed_state)
-    
-    def shutdown(self):
-        """Shutdown the system state manager."""
-        self._running = False
-        if hasattr(self, '_debounce_thread') and self._debounce_thread.is_alive():
-            self._debounce_thread.join(timeout=1.0)
 
 
 # Create a singleton instance that can be imported directly

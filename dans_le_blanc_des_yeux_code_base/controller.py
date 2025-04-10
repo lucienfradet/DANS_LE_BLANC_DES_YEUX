@@ -101,13 +101,6 @@ def signal_handler(sig, frame):
     global stop_input_thread
     print("\nShutting down... Please wait.")
     stop_input_thread = True
-
-    # Add system_state shutdown
-    try:
-        system_state.shutdown()
-        print("System state shutdown successfully")
-    except Exception as e:
-        print(f"Error shutting down system state: {e}")
     
     # Stop all components in the correct order
     # First audio components
@@ -203,19 +196,20 @@ def initialize_components():
     # Load configuration
     config = configparser.ConfigParser()
     config.read('config.ini')
-
-    # Set pressure debounce time if specified in config
-    if 'system' in config and 'pressure_debounce_time' in config['system']:
-        try:
-            debounce_time = config.getfloat('system', 'pressure_debounce_time', fallback=1.0)
-            system_state.set_pressure_debounce_time(debounce_time)
-            print(f"Pressure debounce time set to {debounce_time} seconds")
-        except (ValueError, configparser.Error) as e:
-            print(f"Error reading pressure debounce time: {e}. Using default.")
     
     # Get remote IP from config
     remote_ip = config['ip']['pi-ip']
     print(f"Using remote IP: {remote_ip}")
+
+    # Set pressure debounce time if available in config
+    if 'system' in config and 'pressure_debounce_time' in config['system']:
+        try:
+            debounce_time = config.getfloat('system', 'pressure_debounce_time', fallback=1.0)
+            from system_state import system_state
+            system_state.set_pressure_debounce_time(debounce_time)
+            print(f"Set pressure debounce time to {debounce_time} seconds")
+        except (ValueError, configparser.Error) as e:
+            print(f"Error reading pressure_debounce_time from config: {e}. Using default.")
     
     # Start OSC handler
     print("Starting OSC handler...")
@@ -228,6 +222,8 @@ def initialize_components():
     motor_params = {}
     if 'motor' in config:
         try:
+            motor_params['required_duration'] = config.getfloat('motor', 'required_duration', fallback=0.8)
+            motor_params['check_interval'] = config.getfloat('motor', 'check_interval', fallback=0.1)
             motor_params['motion_timeout'] = config.getfloat('motor', 'motion_timeout', fallback=2.0)
             print(f"Using motor settings from config: {motor_params}")
         except (ValueError, configparser.Error) as e:

@@ -2,7 +2,6 @@
 This file monitors the system state and moves motors when appropriate.
 When a device detects the other device has pressure=true while it doesn't,
 it moves its motors to match the orientation of the pressured device.
-with debouce from system_state
 
 Usage:
     from motor import MotorController
@@ -14,10 +13,13 @@ import time
 from system_state import system_state
 
 class MotorController:
-    def __init__(self, serial_connection, motion_timeout=2.0):
+    def __init__(self, serial_connection, required_duration=1, check_interval=0.1, motion_timeout=2.0):
         self.serial_connection = serial_connection
-        self.motion_timeout = motion_timeout  # How long to wait for motion to complete
+        self.required_duration = required_duration  # Duration to wait before triggering motors
+        self.check_interval = check_interval  # Time between state checks
+        self.motion_timeout = motion_timeout  # Reduced from 3.0 to 2.0 seconds
         
+        self.remote_pressure_start_time = None  # Timestamp when remote pressure was first detected
         self.last_movement_time = 0  # Timestamp of last movement command
         self.movement_min_interval = 1.0  # Minimum time between movement commands
         self.movement_start_time = 0  # Track when movement started
@@ -52,8 +54,21 @@ class MotorController:
 
     def _on_state_change(self, changed_state):
         """Handle state changes immediately when notified by system_state."""
-        pass  # We're using the monitor thread for state checking instead
+        # Reset timer if conditions change
+        if changed_state == "remote" or changed_state == "local":
+            self._check_pressure_conditions()
         
+    def _check_pressure_conditions(self):
+        """Check if pressure conditions are still valid for movement."""
+        local_state = system_state.get_local_state()
+        remote_state = system_state.get_remote_state()
+        
+        # If conditions for movement aren't met, reset timer
+        if not (remote_state["pressure"] and not local_state["pressure"]):
+            if self.remote_pressure_start_time is not None:
+                print("Conditions for movement no longer met, resetting timer")
+                self.remote_pressure_start_time = None
+
     def _monitor_state(self):
         """Monitor system state and trigger motor movements when appropriate."""
         while self.running:
@@ -71,7 +86,7 @@ class MotorController:
                 self._process_pressure_states(local_state, remote_state)
                 
                 # Sleep before next check
-                time.sleep(0.1)  # Check interval
+                time.sleep(self.check_interval)
             except Exception as e:
                 print(f"Error in motor monitoring thread: {e}")
                 time.sleep(1.0)  # Sleep longer on error
@@ -84,18 +99,20 @@ class MotorController:
         # 1. Remote has pressure
         # 2. Local doesn't have pressure
         # 3. Remote is connected
-        # 4. No pending local pressure change
-        if (remote_state["pressure"] and 
-            not local_state["pressure"] and 
-            remote_state["connected"] and
-            not system_state.has_pending_pressure_change()):
+        if remote_state["pressure"] and not local_state["pressure"] and remote_state["connected"]:
+            # Start timer if not already started
+            if self.remote_pressure_start_time is None:
+                self.remote_pressure_start_time = current_time
+                print("Remote pressure detected, starting timer")
             
-            # Check if we can move now (not already moving and min interval has passed)
-            if (not self.moving and 
-                    current_time - self.last_movement_time >= self.movement_min_interval):
-                
-                print(f"Moving motors to match remote orientation: Y={remote_state['y']}, Z={remote_state['z']}")
-                self._start_movement(remote_state["y"], remote_state["z"])
+            # Check if we've waited long enough to confirm it's not a false positive
+            elif current_time - self.remote_pressure_start_time >= self.required_duration:
+                # Check if we can move now
+                if (not self.moving and 
+                        current_time - self.last_movement_time >= self.movement_min_interval):
+                    
+                    print(f"Moving motors to match remote orientation: Y={remote_state['y']}, Z={remote_state['z']}")
+                    self._start_movement(remote_state["y"], remote_state["z"])
 
     def _start_movement(self, y_angle, z_angle):
         """Start a motor movement sequence."""
@@ -130,6 +147,7 @@ class MotorController:
         try:
             # Format the message: Y,Z coordinates followed by newline
             message = f"{y_angle},{z_angle}\n"
+            # print(f"Sending to Arduino: {message.strip()}")
             
             # Send the message
             result = self.serial_connection.write(message)
