@@ -13,15 +13,17 @@ import time
 from system_state import system_state
 
 class MotorController:
-    def __init__(self, serial_connection, required_duration=1, check_interval=0.1, motion_timeout=3.0):
+    def __init__(self, serial_connection, required_duration=1, check_interval=0.1, motion_timeout=2.0):
         self.serial_connection = serial_connection
-        self.required_duration = required_duration  # Duration to wait before triggering motors (prevents false positives)
+        self.required_duration = required_duration  # Duration to wait before triggering motors
         self.check_interval = check_interval  # Time between state checks
-        self.motion_timeout = motion_timeout  # Timeout for motor movements
+        self.motion_timeout = motion_timeout  # Reduced from 3.0 to 2.0 seconds
         
         self.remote_pressure_start_time = None  # Timestamp when remote pressure was first detected
         self.last_movement_time = 0  # Timestamp of last movement command
         self.movement_min_interval = 1.0  # Minimum time between movement commands
+        self.movement_start_time = 0  # Track when movement started
+        self.max_movement_duration = 5.0  # Maximum time a movement can take before forced reset
         
         self.thread = threading.Thread(target=self._monitor_state)
         self.thread.daemon = True
@@ -75,6 +77,11 @@ class MotorController:
                 local_state = system_state.get_local_state()
                 remote_state = system_state.get_remote_state()
                 
+                # Add safety check for stuck moving state
+                if self.moving and time.time() - self.movement_start_time > self.max_movement_duration:
+                    print(f"WARNING: Movement exceeded max duration ({self.max_movement_duration}s). Force resetting.")
+                    self._motion_complete()
+                
                 # Process pressure states
                 self._process_pressure_states(local_state, remote_state)
                 
@@ -111,8 +118,11 @@ class MotorController:
         """Start a motor movement sequence."""
         # Update state
         self.moving = True
+        self.movement_start_time = time.time()  # Track when movement started
         system_state.update_local_state({"moving": True})
         self.last_movement_time = time.time()
+        
+        print(f"Motor - Starting movement at {time.time():.2f} - Y={y_angle}, Z={z_angle}")
         
         # Send movement command
         success = self._send_motor_command(y_angle, z_angle)
@@ -157,7 +167,9 @@ class MotorController:
     
     def _motion_complete(self):
         """Called when motor motion is complete or failed."""
-        print("Motor motion complete")
+        duration = time.time() - self.movement_start_time if hasattr(self, 'movement_start_time') else 0
+        print(f"Motor - Movement complete after {duration:.2f}s")
+        
         self.moving = False
         system_state.update_local_state({"moving": False})
         self.motion_timer = None

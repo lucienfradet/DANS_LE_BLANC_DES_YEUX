@@ -1,0 +1,9 @@
+{
+  "additionalFiles": "",
+  "compiler.optimization_flags": "",
+  "customBuildProperties": "build.warn_data_percentage=75",
+  "fqbn": "arduino:avr:uno",
+  "hardwareFolders": "/home/lucienfradet/.arduino15/packages",
+  "otherLibrariesFolders": "/home/lucienfradet/Arduino/libraries",
+  "sketchLocation": "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/pressure_plate_controller"
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "Sourcefile": null,
+    "Include": "",
+    "Includepath": "/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/cores/arduino"
+  },
+  {
+    "Sourcefile": null,
+    "Include": "",
+    "Includepath": "/home/lucienfradet/.arduino15/packages/arduino/hardware/avr/1.8.6/variants/standard"
+  },
+  {
+    "Sourcefile": "/home/lucienfradet/Arduino/CART461_DANS_LE_BLANC_DES_YEUX/dans_le_blanc_des_yeux_code_base/arduino_code/pressure_plate_controller/build/sketch/pressure_plate_controller.ino.cpp",
+    "Include": "",
+    "Includepath": null
+  }
+]
