@@ -198,20 +198,24 @@ class AudioPlayback:
             # Create pipeline for receiving RTP audio and playing it
             # Include a panorama element that we can adjust dynamically
             pipeline_str = (
-                f"udpsrc port={port} timeout=0 do-timestamp=true buffer-size=65536 ! "
+                f"udpsrc name=src port={port} timeout=0 do-timestamp=true buffer-size=65536 ! "
                 "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
-                "rtpjitterbuffer latency=50 ! "  # Add jitter buffer for smoother playback
-                "rtpL16depay ! "
-                "audioconvert ! "
-                "audioresample ! "
+                "queue name=q1 ! "
+                "rtpjitterbuffer name=jitter latency=50 ! "  # Add jitter buffer for smoother playback
+                "rtpL16depay name=depay0 ! "
+                "queue name=q2 ! "
+                "audioconvert name=conv1 ! "
+                "audioresample name=resample quality=4 ! "  # Lower quality for better compatibility
                 "audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! "
-                "queue max-size-bytes=65536 leaky=downstream ! "
-                "audioconvert ! "
+                "queue name=q3 max-size-bytes=65536 leaky=downstream ! "
+                "audioconvert name=conv2 ! "
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
-                "queue leaky=downstream ! "
-                "audioconvert ! "
-                "audioresample ! "
-                "pulsesink sync=false"
+                "queue name=q4 leaky=downstream ! "
+                "audioconvert name=conv3 ! "
+                "audioresample name=resample2 quality=4 ! "
+                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
+                "queue name=q5 ! "
+                "pulsesink name=sink0 sync=false"
             )
             
             print(f"Creating {name} playback pipeline: {pipeline_str}")

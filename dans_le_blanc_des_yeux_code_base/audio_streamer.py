@@ -297,14 +297,18 @@ class AudioStreamer:
                 device_param = f'device="{self.personal_mic_name}"'
                 
             return (
-                f'pulsesrc {device_param} ! '
+                f'pulsesrc name=src {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
-                'audioconvert ! audioresample ! '
+                'queue name=q1 ! '
+                'audioconvert name=conv1 ! '
+                'audioresample name=resample quality=4 ! '  # Lower quality for better compatibility
                 'audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! '
-                'audioconvert ! '  # Add extra audioconvert for better caps negotiation
-                'rtpL16pay name=pay0 ! '  # Add RTP payloader to properly format RTP packets
+                'queue name=q2 ! '
+                'audioconvert name=conv2 ! '
+                'audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! '
+                'rtpL16pay name=pay0 min-ptime=1000000 max-ptime=2000000 ! '  # Add timing parameters for stability
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
-                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
+                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536 name=sink0'
             )
         else:  # global
             if self.global_mic_id:
@@ -313,14 +317,18 @@ class AudioStreamer:
                 device_param = f'device="{self.global_mic_name}"'
                 
             return (
-                f'pulsesrc {device_param} ! '
+                f'pulsesrc name=src {device_param} ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
-                'audioconvert ! audioresample ! '
+                'queue name=q1 ! '
+                'audioconvert name=conv1 ! '
+                'audioresample name=resample quality=4 ! '  # Lower quality for better compatibility
                 'audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! '
-                'audioconvert ! '  # Add extra audioconvert for better caps negotiation
-                'rtpL16pay name=pay0 ! '  # Add RTP payloader to properly format RTP packets
+                'queue name=q2 ! '
+                'audioconvert name=conv2 ! '
+                'audio/x-raw, format=S16LE, channels=2, rate=44100, layout=interleaved ! '
+                'rtpL16pay name=pay0 min-ptime=1000000 max-ptime=2000000 ! '  # Add timing parameters for stability
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
-                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
+                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536 name=sink0'
             )
     
     def _create_all_pipelines(self) -> bool:
