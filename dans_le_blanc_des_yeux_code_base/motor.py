@@ -2,7 +2,7 @@
 This file monitors the system state and moves motors when appropriate.
 When a device detects the other device has pressure=true while it doesn't,
 it moves its motors to match the orientation of the pressured device.
-with debounce
+with debouce from system_state
 
 Usage:
     from motor import MotorController
@@ -84,19 +84,18 @@ class MotorController:
         # 1. Remote has pressure
         # 2. Local doesn't have pressure
         # 3. Remote is connected
-        # 4. Local pressure state is stable (we only debounce local pressure now)
+        # 4. No pending local pressure change
         if (remote_state["pressure"] and 
             not local_state["pressure"] and 
-            remote_state["connected"]):
+            remote_state["connected"] and
+            not system_state.has_pending_pressure_change()):
             
-            # Check if local pressure state has been stable for the required time
-            if system_state.is_local_pressure_stable():
-                # Check if we can move now (not already moving and min interval has passed)
-                if (not self.moving and 
-                        current_time - self.last_movement_time >= self.movement_min_interval):
-                    
-                    print(f"Moving motors to match remote orientation: Y={remote_state['y']}, Z={remote_state['z']}")
-                    self._start_movement(remote_state["y"], remote_state["z"])
+            # Check if we can move now (not already moving and min interval has passed)
+            if (not self.moving and 
+                    current_time - self.last_movement_time >= self.movement_min_interval):
+                
+                print(f"Moving motors to match remote orientation: Y={remote_state['y']}, Z={remote_state['z']}")
+                self._start_movement(remote_state["y"], remote_state["z"])
 
     def _start_movement(self, y_angle, z_angle):
         """Start a motor movement sequence."""

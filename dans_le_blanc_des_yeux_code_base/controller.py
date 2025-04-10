@@ -101,6 +101,13 @@ def signal_handler(sig, frame):
     global stop_input_thread
     print("\nShutting down... Please wait.")
     stop_input_thread = True
+
+    # Add system_state shutdown
+    try:
+        system_state.shutdown()
+        print("System state shutdown successfully")
+    except Exception as e:
+        print(f"Error shutting down system state: {e}")
     
     # Stop all components in the correct order
     # First audio components
