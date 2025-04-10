@@ -302,10 +302,13 @@ class AudioStreamer:
                 'audioconvert ! '
                 'audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Convert to stereo
-                'rtpL16pay ! '
+                'audioconvert ! '  # Additional conversion to ensure compatibility
+                'rtpL16pay name=pay0 ! '  # Add name=pay0 as some GStreamer versions expect this
+                'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
         else:  # global
+            # Similar changes for global mic
             if self.global_mic_id:
                 device_param = f'device={self.global_mic_id}'
             else:
@@ -316,7 +319,9 @@ class AudioStreamer:
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 'audioconvert ! audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
-                'rtpL16pay ! '
+                'audioconvert ! '  # Additional conversion to ensure compatibility
+                'rtpL16pay name=pay0 ! '  # Add name=pay0
+                'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
     
