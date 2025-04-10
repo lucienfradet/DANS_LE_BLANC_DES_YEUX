@@ -297,9 +297,9 @@ class AudioPlayback:
                     # Mute both channels by setting panorama to extreme value
                     # (this is a hack, ideally we'd use a mute property)
                     if self.personal_panorama:
-                        self.personal_panorama.set_property("panorama", -10.0)
+                        self.personal_panorama.set_property("panorama", 0.0)
                     if self.global_panorama:
-                        self.global_panorama.set_property("panorama", -10.0)
+                        self.global_panorama.set_property("panorama", 0.0)
                     print("Updated panorama: Effectively muted both channels")
                 
         except Exception as e:
