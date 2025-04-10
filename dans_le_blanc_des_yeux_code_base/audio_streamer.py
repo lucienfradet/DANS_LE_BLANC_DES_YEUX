@@ -359,7 +359,7 @@ class AudioStreamer:
             else:
                 device_param = f'device="{self.personal_mic_name}"'
                 
-            # Improved pipeline with better negotiation and buffering
+                            # Improved pipeline with better negotiation and buffering
             return (
                 f'pulsesrc {device_param} ! '
                 'audio/x-raw, rate=44100, channels=1 ! '  # Explicitly set mono input
@@ -368,8 +368,8 @@ class AudioStreamer:
                 'level message=true interval=100000000 ! '  # Add level monitoring
                 'queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! '  # Unlimited queue for buffering
                 'audioconvert ! '  # Additional conversion to ensure compatibility
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Ensure clean input to rtpL16pay
                 'rtpL16pay mtu=1400 ! '  # Set a standard MTU size
-                'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
                 'queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! '  # Another queue before network
                 f'udpsink host={self.remote_ip} port={port} sync=false async=false buffer-size=524288'
             )
@@ -389,8 +389,8 @@ class AudioStreamer:
                 'level message=true interval=100000000 ! '  # Add level monitoring
                 'queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! '  # Unlimited queue for buffering
                 'audioconvert ! '  # Additional conversion to ensure compatibility
-                'rtpL16pay mtu=1400 ! '  # Set a standard MTU size
-                'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Ensure clean input to rtpL16pay
+                'rtpL16pay mtu=1400 ! '  # Set a standard MTU size 
                 'queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! '  # Another queue before network
                 f'udpsink host={self.remote_ip} port={port} sync=false async=false buffer-size=524288'
             )

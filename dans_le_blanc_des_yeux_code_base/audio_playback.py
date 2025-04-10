@@ -211,17 +211,17 @@ class AudioPlayback:
                         break
             
             # Create improved pipeline for receiving RTP audio with better negotiation
-            # Include more queues and specific caps to facilitate negotiation
+            # Let rtpL16depay negotiate its own caps first, then convert
             pipeline_str = (
                 f"udpsrc port={port} timeout=2000000 buffer-size=524288 ! "
                 "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
                 "rtpjitterbuffer latency=200 drop-on-latency=true ! "  # Increased latency for more buffer
                 "queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! "  # Unlimited queue for better buffering
                 "rtpL16depay ! "
-                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "  # Explicit caps after depay
+                "audioconvert ! "  # Convert before applying caps
+                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "  # Now apply caps after conversion
                 "queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! "  # Another queue for smoothing
                 "audioconvert ! "
-                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "  # Explicit caps again
                 "audioresample quality=10 ! "
                 "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "  # Explicit caps after resample
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
