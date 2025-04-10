@@ -214,12 +214,15 @@ class AudioPlayback:
             pipeline_str = (
                 f"udpsrc port={port} timeout=0 buffer-size=65536 ! "
                 "application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! "
-                "rtpjitterbuffer latency=100 ! "
+                "rtpjitterbuffer latency=100 ! "  # Increase latency for more buffer
                 "rtpL16depay ! "
-                "audioconvert ! "  # Single audioconvert before panorama
+                "queue ! "  # Add queue after depay
+                "audioconvert ! "
+                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
-                "audioconvert ! "  # Single audioconvert after panorama
-                "audioresample quality=8 ! "  # Slightly reduced quality (8 is still very good)
+                "queue ! "  # Add queue after panorama
+                "audioconvert ! "
+                "audioresample quality=10 ! "
                 "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
             )
             

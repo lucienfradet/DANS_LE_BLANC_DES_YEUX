@@ -326,11 +326,12 @@ class AudioStreamer:
                 
             return (
                 f'pulsesrc {device_param} ! '
-                'audio/x-raw ! '  # Let pulsesrc output its native format
-                'audioconvert ! '  # This will handle any necessary conversion
+                'audio/x-raw, rate=44100, channels=1 ! '  # Explicitly set mono input
+                'audioconvert ! '
                 'audioresample ! '
-                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Target format
-                'rtpL16pay name=pay0 ! '
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Convert to stereo
+                'audioconvert ! '  # Additional conversion to ensure compatibility
+                'rtpL16pay name=pay0 ! '  # Add name=pay0 as some GStreamer versions expect this
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
@@ -343,11 +344,11 @@ class AudioStreamer:
                 
             return (
                 f'pulsesrc {device_param} ! '
-                'audio/x-raw ! '  # Native format
-                'audioconvert ! '
-                'audioresample ! '
-                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Target format
-                'rtpL16pay name=pay0 ! '
+                f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
+                'audioconvert ! audioresample ! '
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
+                'audioconvert ! '  # Additional conversion to ensure compatibility
+                'rtpL16pay name=pay0 ! '  # Add name=pay0
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
