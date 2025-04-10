@@ -335,6 +335,7 @@ class AudioStreamer:
                 # Now convert mono to stereo (needed for playback)
                 'audiochannelmix ! audio/x-raw, channels=2 ! '
                 'queue ! '  # Another queue before RTP payloading
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Explicit caps before rtpL16pay
                 'rtpL16pay mtu=1400 ! '  # Set MTU explicitly and remove name=pay0
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false async=false buffer-size=65536'
@@ -354,6 +355,7 @@ class AudioStreamer:
                 'audioresample quality=10 ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
                 'queue ! '
+                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Explicit caps before rtpL16pay
                 'rtpL16pay mtu=1400 ! '
                 'application/x-rtp, media=audio, clock-rate=44100, encoding-name=L16, encoding-params=2, channels=2 ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false async=false buffer-size=65536'
