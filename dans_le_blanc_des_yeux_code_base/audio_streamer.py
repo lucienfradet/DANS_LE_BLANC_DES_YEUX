@@ -120,117 +120,295 @@ class AudioStreamer:
             print("Using default audio device names and gain settings")
     
     def _find_audio_devices(self):
-        """Find audio devices using pactl command-line tool for direct PulseAudio access."""
+        """Find audio devices using pactl command-line tool for PulseAudio/PipeWire access."""
         self.personal_mic_id = None
         self.global_mic_id = None
         
         try:
-            # Use pactl to list sources
-            result = subprocess.run(['pactl', 'list', 'sources'], 
+            # First try with short format to get clean list of sources
+            result = subprocess.run(['pactl', 'list', 'sources', 'short'], 
                                    stdout=subprocess.PIPE, 
                                    stderr=subprocess.PIPE, 
                                    text=True)
             
             if result.returncode != 0:
-                raise Exception(f"pactl command failed: {result.stderr}")
-            
-            output = result.stdout
-            
-            # Parse the output to find devices
-            current_device = None
-            current_name = None
-            devices = []
-            
-            for line in output.split('\n'):
-                line = line.strip()
+                # Fall back to the detailed format
+                result = subprocess.run(['pactl', 'list', 'sources'], 
+                                       stdout=subprocess.PIPE, 
+                                       stderr=subprocess.PIPE, 
+                                       text=True)
                 
-                # New source entry
-                if line.startswith('Source #'):
-                    # Save previous device if we found one
-                    if current_device and current_name:
-                        devices.append((current_device, current_name))
-                    
-                    # Extract source number
-                    current_device = line.split('#')[1].strip()
-                    current_name = None
-                    
-                # Get the device name
-                elif line.startswith('Name:'):
-                    current_name = line.split(':', 1)[1].strip()
-                    
-                # Also look for description as backup
-                elif line.startswith('Description:'):
-                    description = line.split(':', 1)[1].strip()
-                    # Store the description with the current device
-                    if current_device:
-                        devices.append((current_device, description))
-            
-            # Add last device if we found one
-            if current_device and current_name:
-                devices.append((current_device, current_name))
-            
-            print(f"Found {len(devices)} audio input devices:")
-            for device_id, device_name in devices:
-                print(f"  - {device_name} (ID: {device_id})")
+                if result.returncode != 0:
+                    raise Exception(f"pactl command failed: {result.stderr}")
                 
-                # Check if it matches our target devices
-                if self.personal_mic_name.lower() in device_name.lower():
-                    self.personal_mic_id = device_id
+                # Parse the detailed output
+                return self._parse_detailed_sources(result.stdout)
+            
+            # Parse short format output
+            sources = []
+            for line in result.stdout.strip().split('\n'):
+                if not line:
+                    continue
+                    
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    source_id = parts[0].strip()
+                    source_name = parts[1].strip()
+                    sources.append((source_id, source_name))
+            
+            # Print found devices
+            print(f"Found {len(sources)} audio input devices:")
+            for source_id, source_name in sources:
+                print(f"  - {source_name} (ID: {source_id})")
+                
+                # Match using more flexible pattern matching for PipeWire/PulseAudio
+                if self._is_match(source_name, self.personal_mic_name):
+                    self.personal_mic_id = source_id
                     print(f"    → Matched as personal mic")
                 
-                if self.global_mic_name.lower() in device_name.lower():
-                    self.global_mic_id = device_id
+                if self._is_match(source_name, self.global_mic_name):
+                    self.global_mic_id = source_id
                     print(f"    → Matched as global mic")
             
             # Check if we found our devices
             if not self.personal_mic_id:
                 print(f"WARNING: Could not find personal mic '{self.personal_mic_name}'")
+                # Try fuzzy matching as a fallback
+                self._try_fuzzy_match(sources, "personal")
+                
             if not self.global_mic_id:
                 print(f"WARNING: Could not find global mic '{self.global_mic_name}'")
+                # Try fuzzy matching as a fallback
+                self._try_fuzzy_match(sources, "global")
                 
         except Exception as e:
             print(f"Error discovering audio devices: {e}")
             print("Using device names as fallback")
 
-    def _set_mic_gains(self):
-        """Set microphone gain levels using PulseAudio commands."""
-        try:
-            # Convert gain percentage (0-100) to volume level PulseAudio expects (0.0-1.0)
-            personal_volume = self.personal_mic_gain / 100.0
-            global_volume = self.global_mic_gain / 100.0
+    def _is_match(self, device_name, target_name):
+        """Check if a device name matches our target using flexible matching."""
+        # Convert both to lowercase for case-insensitive matching
+        device_lower = device_name.lower()
+        target_lower = target_name.lower()
+        
+        # For PipeWire sources, the format is often like:
+        # alsa_input.usb-KTMicro_TX_96Khz_USB_Audio_2022-08-08-0000-0000-0000--00.mono-fallback.2
+        
+        # Check for direct substring match
+        if target_lower in device_lower:
+            return True
+        
+        # Try matching individual parts (useful for PipeWire format)
+        device_parts = device_lower.replace('-', '_').replace('.', '_').split('_')
+        target_parts = target_lower.replace('-', '_').replace('.', '_').split('_')
+        
+        # Check if each target part appears in device parts
+        for target_part in target_parts:
+            if len(target_part) >= 2:  # Only consider meaningful parts (at least 2 chars)
+                if any(target_part in device_part for device_part in device_parts):
+                    return True
+        
+        return False
+
+    def _try_fuzzy_match(self, sources, mic_type):
+        """Try to use fuzzy matching as a last resort."""
+        # Common keywords for audio devices
+        personal_keywords = ["tx", "ktmicro", "headset", "head"]
+        global_keywords = ["usb audio", "usb-audio", "usbmic", "webcam"]
+        
+        keywords = personal_keywords if mic_type == "personal" else global_keywords
+        
+        for source_id, source_name in sources:
+            source_lower = source_name.lower()
             
-            # Format as PulseAudio expects (0x10000 = 100% = 1.0)
-            personal_pa_volume = int(personal_volume * 0x10000)
-            global_pa_volume = int(global_volume * 0x10000)
+            for keyword in keywords:
+                if keyword in source_lower:
+                    if mic_type == "personal":
+                        self.personal_mic_id = source_id
+                        print(f"  → Fuzzy matched '{source_name}' as personal mic using keyword '{keyword}'")
+                        return
+                    else:
+                        self.global_mic_id = source_id
+                        print(f"  → Fuzzy matched '{source_name}' as global mic using keyword '{keyword}'")
+                        return
+
+    def _parse_detailed_sources(self, output):
+        """Parse the detailed output format from pactl list sources."""
+        current_device = None
+        current_name = None
+        devices = []
+        
+        for line in output.split('\n'):
+            line = line.strip()
+            
+            # New source entry
+            if line.startswith('Source #'):
+                # Save previous device if we found one
+                if current_device and current_name:
+                    devices.append((current_device, current_name))
+                
+                # Extract source number
+                current_device = line.split('#')[1].strip()
+                current_name = None
+                
+            # Get the device name
+            elif line.startswith('Name:'):
+                current_name = line.split(':', 1)[1].strip()
+                
+            # Also look for description as backup
+            elif line.startswith('Description:'):
+                description = line.split(':', 1)[1].strip()
+                # Store the description with the current device
+                if current_device:
+                    devices.append((current_device, description))
+        
+        # Add last device if we found one
+        if current_device and current_name:
+            devices.append((current_device, current_name))
+        
+        print(f"Found {len(devices)} audio input devices:")
+        for device_id, device_name in devices:
+            print(f"  - {device_name} (ID: {device_id})")
+            
+            # Use the more flexible matching method
+            if self._is_match(device_name, self.personal_mic_name):
+                self.personal_mic_id = device_id
+                print(f"    → Matched as personal mic")
+            
+            if self._is_match(device_name, self.global_mic_name):
+                self.global_mic_id = device_id
+                print(f"    → Matched as global mic")
+        
+        # Check if we found our devices
+        if not self.personal_mic_id:
+            print(f"WARNING: Could not find personal mic '{self.personal_mic_name}'")
+            # Try fuzzy matching as a fallback
+            self._try_fuzzy_match(devices, "personal")
+            
+        if not self.global_mic_id:
+            print(f"WARNING: Could not find global mic '{self.global_mic_name}'")
+            # Try fuzzy matching as a fallback
+            self._try_fuzzy_match(devices, "global")
+
+    def _set_mic_gains(self):
+        """Set microphone gain levels using PulseAudio/PipeWire commands."""
+        try:
+            # For PulseAudio/PipeWire: volume ranges from 0% to 100%
+            personal_volume = str(self.personal_mic_gain) + "%"
+            global_volume = str(self.global_mic_gain) + "%"
             
             print(f"Setting microphone gain levels:")
             
             # Set personal mic gain if found
             if self.personal_mic_id:
-                cmd = ['pactl', 'set-source-volume', self.personal_mic_id, f'{personal_pa_volume}']
+                # First try pactl command with percentage (works with both PulseAudio and PipeWire)
+                cmd = ['pactl', 'set-source-volume', self.personal_mic_id, personal_volume]
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 
                 if result.returncode == 0:
-                    print(f"  → Set personal mic '{self.personal_mic_name}' gain to {self.personal_mic_gain}%")
+                    print(f"  → Set personal mic gain to {self.personal_mic_gain}%")
                 else:
-                    print(f"  → Failed to set personal mic gain: {result.stderr}")
+                    print(f"  → Failed with pactl percentage format: {result.stderr}")
+                    
+                    # Try alternative format (0.0-1.0 float) for PipeWire
+                    alt_volume = str(self.personal_mic_gain / 100.0)
+                    cmd = ['pactl', 'set-source-volume', self.personal_mic_id, alt_volume]
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    
+                    if result.returncode == 0:
+                        print(f"  → Set personal mic gain to {alt_volume} (float format)")
+                    else:
+                        # Final attempt with raw value
+                        raw_volume = str(int(self.personal_mic_gain * 655.36))  # 0-65536 range
+                        cmd = ['pactl', 'set-source-volume', self.personal_mic_id, raw_volume]
+                        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        
+                        if result.returncode == 0:
+                            print(f"  → Set personal mic gain to {raw_volume} (raw format)")
+                        else:
+                            print(f"  → Failed to set personal mic gain with all methods: {result.stderr}")
             else:
                 print(f"  → Cannot set personal mic gain: device not found")
             
-            # Set global mic gain if found
+            # Set global mic gain if found (same approach)
             if self.global_mic_id:
-                cmd = ['pactl', 'set-source-volume', self.global_mic_id, f'{global_pa_volume}']
+                cmd = ['pactl', 'set-source-volume', self.global_mic_id, global_volume]
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 
                 if result.returncode == 0:
-                    print(f"  → Set global mic '{self.global_mic_name}' gain to {self.global_mic_gain}%")
+                    print(f"  → Set global mic gain to {self.global_mic_gain}%")
                 else:
-                    print(f"  → Failed to set global mic gain: {result.stderr}")
+                    print(f"  → Failed with pactl percentage format: {result.stderr}")
+                    
+                    # Try alternative format (0.0-1.0 float) for PipeWire
+                    alt_volume = str(self.global_mic_gain / 100.0)
+                    cmd = ['pactl', 'set-source-volume', self.global_mic_id, alt_volume]
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    
+                    if result.returncode == 0:
+                        print(f"  → Set global mic gain to {alt_volume} (float format)")
+                    else:
+                        # Final attempt with raw value
+                        raw_volume = str(int(self.global_mic_gain * 655.36))  # 0-65536 range
+                        cmd = ['pactl', 'set-source-volume', self.global_mic_id, raw_volume]
+                        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        
+                        if result.returncode == 0:
+                            print(f"  → Set global mic gain to {raw_volume} (raw format)")
+                        else:
+                            print(f"  → Failed to set global mic gain with all methods: {result.stderr}")
             else:
                 print(f"  → Cannot set global mic gain: device not found")
                 
+            # Print the current volume levels
+            self._print_current_volumes()
+                    
         except Exception as e:
             print(f"Error setting microphone gain levels: {e}")
+
+    def _print_current_volumes(self):
+        """Print current volume levels for debugging."""
+        try:
+            print("Current volume levels:")
+            
+            if self.personal_mic_id:
+                # Use pactl to get current volume
+                cmd = ['pactl', 'list', 'sources']
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                if result.returncode == 0:
+                    output = result.stdout
+                    
+                    # Find the personal mic section
+                    sections = output.split("Source #")
+                    for section in sections:
+                        if self.personal_mic_id in section.split("\n")[0]:
+                            # Find volume line
+                            for line in section.split("\n"):
+                                if "Volume:" in line and "%" in line:
+                                    print(f"  → Personal mic: {line.strip()}")
+                                    break
+            
+            if self.global_mic_id:
+                # Use pactl to get current volume
+                cmd = ['pactl', 'list', 'sources']
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                if result.returncode == 0:
+                    output = result.stdout
+                    
+                    # Find the global mic section
+                    sections = output.split("Source #")
+                    for section in sections:
+                        if self.global_mic_id in section.split("\n")[0]:
+                            # Find volume line
+                            for line in section.split("\n"):
+                                if "Volume:" in line and "%" in line:
+                                    print(f"  → Global mic: {line.strip()}")
+                                    break
+                                    
+        except Exception as e:
+            print(f"Error getting current volumes: {e}")
     
     def start(self) -> bool:
         """Start the audio streaming system with persistent pipelines."""
