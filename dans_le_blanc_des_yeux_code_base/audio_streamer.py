@@ -169,7 +169,6 @@ class AudioStreamer:
                 # Exact name matching
                 if device_name == self.personal_mic_name:
                     self.personal_mic_id = device_id
-                    print(f"setting id {self.personal_mic_id}")
                     print(f"    → Matched as personal mic (exact match)")
                 
                 if device_name == self.global_mic_name:
@@ -201,8 +200,6 @@ class AudioStreamer:
             
             # Set personal mic gain if found
             if self.personal_mic_id:
-
-                print(f"id is now: {self.personal_mic_id}")
                 cmd = ['pactl', 'set-source-volume', self.personal_mic_id, f'{personal_pa_volume}']
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 
