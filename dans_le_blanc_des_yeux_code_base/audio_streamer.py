@@ -25,6 +25,7 @@ import time
 import threading
 import configparser
 from typing import Dict, Optional, Tuple, List, Callable, Any
+import subprocess
 
 # Import GStreamer but avoid GLib main loop
 import gi
@@ -58,6 +59,10 @@ class AudioStreamer:
         self.personal_mic_name = "TX 96Khz"
         self.global_mic_name = "USB Audio Device"
         
+        # Gain settings (will be loaded from config)
+        self.personal_mic_gain = 65  # Default value
+        self.global_mic_gain = 75    # Default value
+        
         # Streaming state
         self.current_mic_sending = None  # "personal" or "global" or None
         
@@ -79,6 +84,9 @@ class AudioStreamer:
         # Create direct ALSA commands for finding devices (no GStreamer device monitor)
         self._find_audio_devices()
         
+        # Set microphone gain levels
+        self._set_mic_gains()
+        
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
         
@@ -95,15 +103,21 @@ class AudioStreamer:
                 self.personal_mic_name = config.get('audio', 'personal_mic_name', fallback="TX 96Khz")
                 self.global_mic_name = config.get('audio', 'global_mic_name', fallback="USB Audio Device")
                 
+                # Load gain settings
+                self.personal_mic_gain = config.getint('audio', 'personal_mic_gain', fallback=65)
+                self.global_mic_gain = config.getint('audio', 'global_mic_gain', fallback=75)
+                
                 print(f"Loaded audio device names from config.ini:")
                 print(f"  personal mic name: {self.personal_mic_name}")
                 print(f"  global mic name: {self.global_mic_name}")
+                print(f"  personal mic gain: {self.personal_mic_gain}")
+                print(f"  global mic gain: {self.global_mic_gain}")
             else:
                 print("No [audio] section found in config.ini, using default settings")
                 
         except Exception as e:
             print(f"Error loading audio config: {e}")
-            print("Using default audio device names")
+            print("Using default audio device names and gain settings")
     
     def _find_audio_devices(self):
         """Find audio devices using pactl command-line tool for direct PulseAudio access."""
@@ -112,7 +126,6 @@ class AudioStreamer:
         
         try:
             # Use pactl to list sources
-            import subprocess
             result = subprocess.run(['pactl', 'list', 'sources'], 
                                    stdout=subprocess.PIPE, 
                                    stderr=subprocess.PIPE, 
@@ -178,6 +191,46 @@ class AudioStreamer:
         except Exception as e:
             print(f"Error discovering audio devices: {e}")
             print("Using device names as fallback")
+
+    def _set_mic_gains(self):
+        """Set microphone gain levels using PulseAudio commands."""
+        try:
+            # Convert gain percentage (0-100) to volume level PulseAudio expects (0.0-1.0)
+            personal_volume = self.personal_mic_gain / 100.0
+            global_volume = self.global_mic_gain / 100.0
+            
+            # Format as PulseAudio expects (0x10000 = 100% = 1.0)
+            personal_pa_volume = int(personal_volume * 0x10000)
+            global_pa_volume = int(global_volume * 0x10000)
+            
+            print(f"Setting microphone gain levels:")
+            
+            # Set personal mic gain if found
+            if self.personal_mic_id:
+                cmd = ['pactl', 'set-source-volume', self.personal_mic_id, f'{personal_pa_volume}']
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                if result.returncode == 0:
+                    print(f"  → Set personal mic '{self.personal_mic_name}' gain to {self.personal_mic_gain}%")
+                else:
+                    print(f"  → Failed to set personal mic gain: {result.stderr}")
+            else:
+                print(f"  → Cannot set personal mic gain: device not found")
+            
+            # Set global mic gain if found
+            if self.global_mic_id:
+                cmd = ['pactl', 'set-source-volume', self.global_mic_id, f'{global_pa_volume}']
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                if result.returncode == 0:
+                    print(f"  → Set global mic '{self.global_mic_name}' gain to {self.global_mic_gain}%")
+                else:
+                    print(f"  → Failed to set global mic gain: {result.stderr}")
+            else:
+                print(f"  → Cannot set global mic gain: device not found")
+                
+        except Exception as e:
+            print(f"Error setting microphone gain levels: {e}")
     
     def start(self) -> bool:
         """Start the audio streaming system with persistent pipelines."""
