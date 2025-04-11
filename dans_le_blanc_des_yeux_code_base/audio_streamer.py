@@ -120,70 +120,97 @@ class AudioStreamer:
             print("Using default audio device names and gain settings")
     
     def _find_audio_devices(self):
-        """Find audio devices using pactl command-line tool with exact name matching."""
+        """Find audio devices using pactl command-line tool with exact name matching and retries."""
         self.personal_mic_id = None
         self.global_mic_id = None
         
-        try:
-            # Use pactl to list sources
-            result = subprocess.run(['pactl', 'list', 'sources'], 
-                                   stdout=subprocess.PIPE, 
-                                   stderr=subprocess.PIPE, 
-                                   text=True)
-            
-            if result.returncode != 0:
-                raise Exception(f"pactl command failed: {result.stderr}")
-            
-            output = result.stdout
-            
-            # Parse the output to find devices
-            devices = []  # List of (device_id, name) tuples
-            current_device = None
-            current_name = None
-            
-            for line in output.split('\n'):
-                line = line.strip()
+        max_attempts = 3  # Try up to 3 times
+        retry_delay = 2   # Wait 2 seconds between attempts
+        
+        for attempt in range(1, max_attempts + 1):
+            try:
+                print(f"Discovering audio devices (attempt {attempt}/{max_attempts})...")
                 
-                # New source entry
-                if line.startswith('Source #'):
-                    # Save previous device if we found one
-                    if current_device and current_name:
-                        devices.append((current_device, current_name))
+                # Use pactl to list sources
+                result = subprocess.run(['pactl', 'list', 'sources'], 
+                                       stdout=subprocess.PIPE, 
+                                       stderr=subprocess.PIPE, 
+                                       text=True)
+                
+                if result.returncode != 0:
+                    raise Exception(f"pactl command failed: {result.stderr}")
+                
+                output = result.stdout
+                
+                # Parse the output to find devices
+                devices = []  # List of (device_id, name) tuples
+                current_device = None
+                current_name = None
+                
+                for line in output.split('\n'):
+                    line = line.strip()
                     
-                    # Extract source number
-                    current_device = line.split('#')[1].strip()
-                    current_name = None
+                    # New source entry
+                    if line.startswith('Source #'):
+                        # Save previous device if we found one
+                        if current_device and current_name:
+                            devices.append((current_device, current_name))
+                        
+                        # Extract source number
+                        current_device = line.split('#')[1].strip()
+                        current_name = None
+                        
+                    # Get the device name
+                    elif line.startswith('Name:'):
+                        current_name = line.split(':', 1)[1].strip()
+                
+                # Add last device if we found one
+                if current_device and current_name:
+                    devices.append((current_device, current_name))
+                
+                print(f"Found {len(devices)} audio input devices:")
+                for device_id, device_name in devices:
+                    print(f"  - {device_name} (ID: {device_id})")
                     
-                # Get the device name
-                elif line.startswith('Name:'):
-                    current_name = line.split(':', 1)[1].strip()
-            
-            # Add last device if we found one
-            if current_device and current_name:
-                devices.append((current_device, current_name))
-            
-            print(f"Found {len(devices)} audio input devices:")
-            for device_id, device_name in devices:
-                print(f"  - {device_name} (ID: {device_id})")
+                    # Exact name matching
+                    if device_name == self.personal_mic_name:
+                        self.personal_mic_id = device_id
+                        print(f"    → Matched as personal mic (exact match)")
+                    
+                    if device_name == self.global_mic_name:
+                        self.global_mic_id = device_id
+                        print(f"    → Matched as global mic (exact match)")
                 
-                # Exact name matching
-                if device_name == self.personal_mic_name:
-                    self.personal_mic_id = device_id
-                    print(f"    → Matched as personal mic (exact match)")
+                # If we found both devices, we're done
+                if self.personal_mic_id and self.global_mic_id:
+                    print("Successfully found both audio devices")
+                    return
+                    
+                # If we found at least one device, we're making progress
+                if self.personal_mic_id or self.global_mic_id:
+                    print("Found at least one required audio device")
+                    
+                # If we didn't find any devices and have more attempts, wait and retry
+                if not (self.personal_mic_id or self.global_mic_id) and attempt < max_attempts:
+                    print(f"No required audio devices found, waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+                    continue
+                    
+                # Check if we found our devices after all attempts
+                if not self.personal_mic_id:
+                    print(f"WARNING: Could not find personal mic with exact name '{self.personal_mic_name}'")
+                if not self.global_mic_id:
+                    print(f"WARNING: Could not find global mic with exact name '{self.global_mic_name}'")
+                    
+            except Exception as e:
+                print(f"Error discovering audio devices (attempt {attempt}/{max_attempts}): {e}")
                 
-                if device_name == self.global_mic_name:
-                    self.global_mic_id = device_id
-                    print(f"    → Matched as global mic (exact match)")
-            
-            # Check if we found our devices
-            if not self.personal_mic_id:
-                print(f"WARNING: Could not find personal mic with exact name '{self.personal_mic_name}'")
-            if not self.global_mic_id:
-                print(f"WARNING: Could not find global mic with exact name '{self.global_mic_name}'")
-                
-        except Exception as e:
-            print(f"Error discovering audio devices: {e}")
-            print("Using device names as fallback")
+                # If we have more attempts, wait and retry
+                if attempt < max_attempts:
+                    print(f"Waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+                else:
+                    print("Using device names as fallback")
 
     def _set_mic_gains(self):
         """Set microphone gain levels using PulseAudio commands."""
