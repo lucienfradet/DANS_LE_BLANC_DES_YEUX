@@ -271,7 +271,7 @@ class AudioStreamer:
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 
                 if result.returncode == 0:
-                    print(f"  → Set personal mic '{self.personal_mic_name}' gain to {self.personal_mic_gain}%")
+                    print(f"  → Set personal mic '{self.personal_mic_name}' (ID:{self.personal_mic_id}) gain to {self.personal_mic_gain}%")
                 else:
                     print(f"  → Failed to set personal mic gain: {result.stderr}")
             else:
@@ -283,7 +283,7 @@ class AudioStreamer:
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 
                 if result.returncode == 0:
-                    print(f"  → Set global mic '{self.global_mic_name}' gain to {self.global_mic_gain}%")
+                    print(f"  → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}) gain to {self.global_mic_gain}%")
                 else:
                     print(f"  → Failed to set global mic gain: {result.stderr}")
             else:
