@@ -120,7 +120,7 @@ class AudioStreamer:
             print("Using default audio device names and gain settings")
     
     def _find_audio_devices(self):
-        """Find audio devices using pactl command-line tool for direct PulseAudio access."""
+        """Find audio devices using pactl command-line tool with fuzzy matching for more reliable detection."""
         self.personal_mic_id = None
         self.global_mic_id = None
         
@@ -137,9 +137,10 @@ class AudioStreamer:
             output = result.stdout
             
             # Parse the output to find devices
+            devices = []  # List of (device_id, name, description) tuples
             current_device = None
             current_name = None
-            devices = []
+            current_description = None
             
             for line in output.split('\n'):
                 line = line.strip()
@@ -147,49 +148,108 @@ class AudioStreamer:
                 # New source entry
                 if line.startswith('Source #'):
                     # Save previous device if we found one
-                    if current_device and current_name:
-                        devices.append((current_device, current_name))
+                    if current_device:
+                        devices.append((current_device, current_name or "", current_description or ""))
                     
                     # Extract source number
                     current_device = line.split('#')[1].strip()
                     current_name = None
+                    current_description = None
                     
                 # Get the device name
                 elif line.startswith('Name:'):
                     current_name = line.split(':', 1)[1].strip()
                     
-                # Also look for description as backup
+                # Get the description
                 elif line.startswith('Description:'):
-                    description = line.split(':', 1)[1].strip()
-                    # Store the description with the current device
-                    if current_device:
-                        devices.append((current_device, description))
+                    current_description = line.split(':', 1)[1].strip()
             
             # Add last device if we found one
-            if current_device and current_name:
-                devices.append((current_device, current_name))
+            if current_device:
+                devices.append((current_device, current_name or "", current_description or ""))
+            
+            # Function to calculate similarity score between two strings
+            def similarity_score(s1, s2):
+                """Calculate a simple similarity score between two strings."""
+                s1 = s1.lower()
+                s2 = s2.lower()
+                
+                # Direct substring match gets high score
+                if s1 in s2 or s2 in s1:
+                    return 0.9
+                
+                # Count common words for partial matching
+                words1 = set(s1.split())
+                words2 = set(s2.split())
+                common_words = words1.intersection(words2)
+                
+                if not words1 or not words2:
+                    return 0
+                    
+                # Return proportion of common words
+                return len(common_words) / max(len(words1), len(words2))
+            
+            # Find best matches for personal and global mics
+            best_personal_score = 0
+            best_global_score = 0
             
             print(f"Found {len(devices)} audio input devices:")
-            for device_id, device_name in devices:
-                print(f"  - {device_name} (ID: {device_id})")
+            for device_id, name, description in devices:
+                # Create a combined string to match against
+                combined = f"{name} {description}"
+                print(f"  - {combined} (ID: {device_id})")
                 
-                # Check if it matches our target devices
-                if self.personal_mic_name.lower() in device_name.lower():
+                # Calculate scores for each mic type
+                personal_score = max(
+                    similarity_score(self.personal_mic_name, name),
+                    similarity_score(self.personal_mic_name, description),
+                    similarity_score(self.personal_mic_name, combined)
+                )
+                
+                global_score = max(
+                    similarity_score(self.global_mic_name, name),
+                    similarity_score(self.global_mic_name, description),
+                    similarity_score(self.global_mic_name, combined)
+                )
+                
+                # Print scores for debugging
+                if personal_score > 0.1:
+                    print(f"    → Personal mic match score: {personal_score:.2f}")
+                if global_score > 0.1:
+                    print(f"    → Global mic match score: {global_score:.2f}")
+                
+                # Update best matches if better scores found
+                if personal_score > best_personal_score:
+                    best_personal_score = personal_score
                     self.personal_mic_id = device_id
-                    print(f"    → Matched as personal mic")
+                    print(f"    → New best match for personal mic (score: {personal_score:.2f})")
                 
-                if self.global_mic_name.lower() in device_name.lower():
+                if global_score > best_global_score:
+                    best_global_score = global_score
                     self.global_mic_id = device_id
-                    print(f"    → Matched as global mic")
+                    print(f"    → New best match for global mic (score: {global_score:.2f})")
             
-            # Check if we found our devices
-            if not self.personal_mic_id:
-                print(f"WARNING: Could not find personal mic '{self.personal_mic_name}'")
-            if not self.global_mic_id:
-                print(f"WARNING: Could not find global mic '{self.global_mic_name}'")
+            # Threshold for acceptable matches
+            min_score_threshold = 0.3
+            
+            # Check if we found acceptable matches
+            if not self.personal_mic_id or best_personal_score < min_score_threshold:
+                print(f"WARNING: Could not find reliable match for personal mic '{self.personal_mic_name}'")
+                self.personal_mic_id = None
+                
+            if not self.global_mic_id or best_global_score < min_score_threshold:
+                print(f"WARNING: Could not find reliable match for global mic '{self.global_mic_name}'")
+                self.global_mic_id = None
+                
+            # Final results
+            if self.personal_mic_id:
+                print(f"Selected personal mic: ID {self.personal_mic_id} (match score: {best_personal_score:.2f})")
+            if self.global_mic_id:
+                print(f"Selected global mic: ID {self.global_mic_id} (match score: {best_global_score:.2f})")
                 
         except Exception as e:
             print(f"Error discovering audio devices: {e}")
+            print(f"Exception details: {str(e)}")
             print("Using device names as fallback")
 
     def _set_mic_gains(self):
