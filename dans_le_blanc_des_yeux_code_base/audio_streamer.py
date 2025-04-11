@@ -125,7 +125,7 @@ class AudioStreamer:
         self.global_mic_id = None
         
         max_attempts = 3  # Try up to 3 times
-        retry_delay = 2   # Wait 2 seconds between attempts
+        retry_delay = 3   # Wait 2 seconds between attempts
         
         for attempt in range(1, max_attempts + 1):
             try:

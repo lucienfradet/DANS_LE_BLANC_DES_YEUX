@@ -164,6 +164,31 @@ if [ $DISABLE_AUDIO -eq 0 ]; then
     echo "Restarting ALSA sound system..."
     sudo alsa force-reload || true
     sleep 1
+
+    # Make sure PulseAudio is running
+    pulseaudio --check || { pulseaudio --start; echo "Started PulseAudio"; }
+
+    # Wait for PulseAudio to be fully ready with device detection
+    echo "Waiting for PulseAudio to initialize audio devices..."
+    MAX_WAIT=10
+    for i in $(seq 1 $MAX_WAIT); do
+        # Check if we can get a device list with actual devices
+        DEVICE_COUNT=$(pactl list sources short 2>/dev/null | grep -v "auto_null" | wc -l)
+        
+        if [ "$DEVICE_COUNT" -gt 0 ]; then
+            echo "PulseAudio ready after $i seconds with $DEVICE_COUNT devices detected"
+            break
+        fi
+        
+        echo "Waiting for PulseAudio devices... ($i/$MAX_WAIT)"
+        sleep 1
+        
+        # On the 5th second, try to reload modules to speed up detection
+        if [ "$i" -eq 5 ]; then
+            echo "Attempting to refresh PulseAudio device list..."
+            pactl load-module module-detect 2>/dev/null || true
+        fi
+    done
     
     # List available audio devices using GStreamer
     echo "GStreamer audio devices:"
