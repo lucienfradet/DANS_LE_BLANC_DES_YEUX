@@ -7,3 +7,8 @@ To block or unlbock wifi to force Hat LTE, use:
 sudo rfkill unblock wifi
 sudo rfkill block wifi
 ```
+
+### Screen brightness
+```bash
+/usr/share/applications/brightness64bit
+```

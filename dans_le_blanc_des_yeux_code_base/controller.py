@@ -227,6 +227,14 @@ def initialize_components():
             motor_params['required_duration'] = config.getfloat('motor', 'required_duration', fallback=0.8)
             motor_params['check_interval'] = config.getfloat('motor', 'check_interval', fallback=0.1)
             motor_params['motion_timeout'] = config.getfloat('motor', 'motion_timeout', fallback=2.0)
+
+            # Y-axis transformation parameters
+            motor_params['y_reverse'] = config.getboolean('motor', 'y_reverse', fallback=True)
+            motor_params['y_min_input'] = config.getfloat('motor', 'y_min_input', fallback=-10)
+            motor_params['y_max_input'] = config.getfloat('motor', 'y_max_input', fallback=60)
+            motor_params['y_min_output'] = config.getfloat('motor', 'y_min_output', fallback=-30)
+            motor_params['y_max_output'] = config.getfloat('motor', 'y_max_output', fallback=80)
+
             print(f"Using motor settings from config: {motor_params}")
         except (ValueError, configparser.Error) as e:
             print(f"Error reading motor config: {e}. Using defaults.")

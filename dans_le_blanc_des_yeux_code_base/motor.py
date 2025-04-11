@@ -13,11 +13,19 @@ import time
 from system_state import system_state
 
 class MotorController:
-    def __init__(self, serial_connection, required_duration=1, check_interval=0.1, motion_timeout=2.0):
+    def __init__(self, serial_connection, required_duration=1, check_interval=0.1, motion_timeout=2.0,
+                 y_reverse=True, y_min_input=-10, y_max_input=60, y_min_output=-30, y_max_output=80):
         self.serial_connection = serial_connection
         self.required_duration = required_duration  # Duration to wait before triggering motors
         self.check_interval = check_interval  # Time between state checks
         self.motion_timeout = motion_timeout  # Reduced from 3.0 to 2.0 seconds
+        
+        # Y-axis transformation parameters
+        self.y_reverse = y_reverse
+        self.y_min_input = y_min_input
+        self.y_max_input = y_max_input
+        self.y_min_output = y_min_output
+        self.y_max_output = y_max_output
         
         self.remote_pressure_start_time = None  # Timestamp when remote pressure was first detected
         self.last_movement_time = 0  # Timestamp of last movement command
@@ -114,6 +122,43 @@ class MotorController:
                     print(f"Moving motors to match remote orientation: Y={remote_state['y']}, Z={remote_state['z']}")
                     self._start_movement(remote_state["y"], remote_state["z"])
 
+    def _transform_y_value(self, y_value):
+        """Transform the Y value based on configuration parameters.
+        
+        This function:
+        1. Applies direction reversal if configured (reflection around midpoint)
+        2. Clamps the input value to the specified range
+        3. Maps the value from input range to output range
+        """
+        original_y = y_value
+        
+        # Apply reversal if needed (reflection around the midpoint of the input range)
+        if self.y_reverse:
+            # Calculate the midpoint of the input range
+            midpoint = (self.y_max_input + self.y_min_input) / 2
+            
+            # Reflect the value around the midpoint
+            y_value = (self.y_max_input + self.y_min_input) - y_value
+            
+            print(f"Y value reflected: {original_y} → {y_value} (around midpoint {midpoint})")
+            
+        # Clamp input value to specified range
+        y_value = max(self.y_min_input, min(y_value, self.y_max_input))
+        
+        # Map from input range to output range
+        input_range = self.y_max_input - self.y_min_input
+        output_range = self.y_max_output - self.y_min_output
+        
+        # If input range is zero, avoid division by zero
+        if input_range == 0:
+            mapped_value = self.y_min_output
+        else:
+            normalized = (y_value - self.y_min_input) / input_range
+            mapped_value = self.y_min_output + (normalized * output_range)
+        
+        # Round to nearest integer for motor control
+        return round(mapped_value)
+
     def _start_movement(self, y_angle, z_angle):
         """Start a motor movement sequence."""
         # Update state
@@ -122,10 +167,13 @@ class MotorController:
         system_state.update_local_state({"moving": True})
         self.last_movement_time = time.time()
         
-        print(f"Motor - Starting movement at {time.time():.2f} - Y={y_angle}, Z={z_angle}")
+        # Transform the Y angle value
+        transformed_y = self._transform_y_value(y_angle)
         
-        # Send movement command
-        success = self._send_motor_command(y_angle, z_angle)
+        print(f"Motor - Starting movement at {time.time():.2f} - Y={y_angle} (transformed to {transformed_y}), Z={z_angle}")
+        
+        # Send movement command with transformed Y value
+        success = self._send_motor_command(transformed_y, z_angle)
         
         if success:
             # Set timer for motion completion
