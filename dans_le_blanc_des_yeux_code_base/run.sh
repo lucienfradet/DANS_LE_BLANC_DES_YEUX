@@ -388,6 +388,7 @@ fi
 
 if [ $SERVICE_MODE -eq 1 ]; then
     # ARGS="$ARGS --service"
+    ARGS="$ARGS"
 fi
 
 if [ $DISABLE_VIDEO -eq 0 ]; then
