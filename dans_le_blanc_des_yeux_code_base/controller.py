@@ -454,9 +454,18 @@ if __name__ == "__main__":
         if not args.disable_video:
             camera_manager, video_streamer, video_display = initialize_video_components(remote_ip, config, args.disable_video)
         
-        # Keep main thread alive while the input thread handles commands
+        # Keep main thread alive with appropriate behavior based on mode
+        heartbeat_counter = 0
         while True:
             time.sleep(1)
+            
+            # In service mode, provide a heartbeat log every 5 minutes
+            # to show the service is still running
+            if args.service:
+                heartbeat_counter += 1
+                if heartbeat_counter >= 300:  # Every 5 minutes (300 seconds)
+                    print(f"Service heartbeat: System running for {heartbeat_counter} seconds. System state: {system_state.get_status_summary()}")
+                    heartbeat_counter = 0
             
     except KeyboardInterrupt:
         print("\nUser requested shutdown.")
