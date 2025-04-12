@@ -1,6 +1,6 @@
 """
 Video streaming module for the Dans le Blanc des Yeux installation.
-Handles sending and receiving video streams between devices using custom UDP streaming.
+Handles sending and receiving video streams between devices using H.265 encoding.
 
 Streaming Logic:
 1. When remote device has pressure=true and local doesn't: Send external PiCamera feed
@@ -16,7 +16,7 @@ import socket
 import struct
 import numpy as np
 import cv2
-from typing import Dict, Optional, Tuple, List, Callable
+from typing import Dict, Optional, Tuple, List, Callable, Any, Union
 
 from system_state import system_state
 from camera_manager import CameraManager
@@ -25,8 +25,17 @@ from camera_manager import CameraManager
 INTERNAL_STREAM_PORT = 5000  # Port for internal camera stream
 EXTERNAL_STREAM_PORT = 5001  # Port for external camera stream
 
+# H.265 Encoding Constants
+KEYFRAME_INTERVAL = 30     # Send a keyframe every 30 frames
+H265_BITRATE = 1000000     # 1 Mbps default bitrate
+FRAME_RATE = 30            # Target frame rate
+
+# Encoding protocol constants
+CODEC_JPEG = 0  # Still supported for backward compatibility
+CODEC_H265 = 1
+
 class VideoStreamer:
-    """Handles video streaming between devices."""
+    """Handles video streaming between devices using H.265 encoding."""
     
     def __init__(self, camera_manager: CameraManager, remote_ip: str):
         self.camera_manager = camera_manager
@@ -48,32 +57,41 @@ class VideoStreamer:
         # Frame dimensions and quality
         self.frame_width = 640
         self.frame_height = 480
-        self.jpeg_quality = 30  # 0-100, higher is better quality
+        self.jpeg_quality = 30  # For backward compatibility only
         
-        # For H.264 encoding
-        self.internal_codec = None
-        self.external_codec = None
+        # Frame counters for keyframe detection
         self.frame_count = {"internal": 0, "external": 0}
         
-        # For H.264 decoding
-        self.internal_decoder = None
-        self.external_decoder = None
-
         # Frame handling
-        self.buffer_size = 65536
+        self.buffer_size = 65536  # UDP packet buffer size
         
-        # Callbacks
+        # Callbacks for new frames
         self.on_internal_frame_received = None
         self.on_external_frame_received = None
         
         # Register as observer for state changes
         system_state.add_observer(self._on_state_change)
         
+        # Initialize GStreamer
+        import gi
+        gi.require_version('Gst', '1.0')
+        from gi.repository import Gst
+        if not Gst.is_initialized():
+            Gst.init(None)
+        
         print(f"Video streamer initialized with remote IP: {remote_ip}")
+        
+        # Always assume GStreamer is available
+        self.has_gstreamer = True
+    
+    def _check_gstreamer_support(self) -> bool:
+        """Always return True - we're assuming GStreamer is available."""
+        print("Assuming GStreamer is available as requested")
+        return True
     
     def start(self) -> bool:
         """Start the video streaming system."""
-        print("Starting video streamer with H.264 encoding...")
+        print("Starting video streamer with H.265 encoding...")
         self.running = True
         
         # Start receiver threads
@@ -98,12 +116,15 @@ class VideoStreamer:
             thread.join(timeout=1.0)
 
         # Release encoders
-        if self.internal_codec:
-            self.internal_codec.release()
-        if self.external_codec:
-            self.external_codec.release()
+        self._release_encoders()
         
         print("Video streamer stopped")
+    
+    def _release_encoders(self) -> None:
+        """Clean up resources."""
+        # We don't need to do anything here since we're using direct GStreamer pipelines
+        # that are created and cleaned up for each frame
+        pass
     
     def get_received_internal_frame(self) -> Optional[np.ndarray]:
         """Get the latest received internal camera frame from the remote device."""
@@ -174,29 +195,14 @@ class VideoStreamer:
         sock.settimeout(0.5)  # Set a timeout for responsive shutdown
         return sock
 
-    def _create_h264_encoder(self) -> cv2.VideoWriter:
-        """Create an H.264 encoder using OpenCV's VideoWriter."""
-        # Create an in-memory encoder for H.264
-        # gstreamer pipeline for H.264 encoding
-        if cv2.ocl.useOpenCL():
-            # If OpenCL is available, use hardware acceleration
-            fourcc = cv2.VideoWriter_fourcc(*'H264')
-            encoder = cv2.VideoWriter('appsrc ! videoconvert ! video/x-raw,format=I420 ! '
-                                      f'x264enc bitrate={H264_BITRATE//1000} key-int-max={KEYFRAME_INTERVAL} ! '
-                                      'video/x-h264,profile=baseline ! appsink',
-                                      0, 30.0, (self.frame_width, self.frame_height))
-        else:
-            # Fallback to software encoding
-            fourcc = cv2.VideoWriter_fourcc(*'X264')
-            encoder = cv2.VideoWriter('output_temp.h264', fourcc, 30.0, 
-                                     (self.frame_width, self.frame_height), True)
+    def _create_h265_encoder(self, width: int, height: int) -> cv2.VideoWriter:
+        """Create an H.265 encoder using GStreamer.
         
-        # Check if encoder was successfully created
-        if not encoder.isOpened():
-            print("Warning: Failed to create H.264 encoder, falling back to JPEG")
-            return None
-            
-        return encoder
+        This is a placeholder since we're using direct GStreamer encoding.
+        The returned encoder is not actually used for encoding, but is kept for API compatibility.
+        """
+        # Return a dummy encoder
+        return True
 
     def _start_internal_stream(self) -> bool:
         """Start streaming the internal camera to the remote device."""
@@ -208,8 +214,16 @@ class VideoStreamer:
             return False
         
         try:
-            # Initialize H.264 encoder
-            self.internal_codec = self._create_h264_encoder()
+            # Get a test frame to determine dimensions
+            test_frame = self.camera_manager.get_internal_frame()
+            if test_frame is None:
+                print("Could not get test frame from internal camera")
+                return False
+                
+            height, width = test_frame.shape[:2]
+            self.frame_width, self.frame_height = width, height
+            
+            # Reset frame counter for keyframe generation
             self.frame_count["internal"] = 0
             
             # Start sender thread
@@ -219,7 +233,7 @@ class VideoStreamer:
             self.threads.append(sender_thread)
             
             self.internal_sending = True
-            print(f"Started internal camera stream to {self.remote_ip}:{INTERNAL_STREAM_PORT}")
+            print(f"Started internal camera H.265 stream to {self.remote_ip}:{INTERNAL_STREAM_PORT}")
             return True
         except Exception as e:
             print(f"Failed to start internal camera stream: {e}")
@@ -235,8 +249,13 @@ class VideoStreamer:
             return False
         
         try:
-            # Initialize H.264 encoder
-            self.external_codec = self._create_h264_encoder()
+            # Get a test frame to determine dimensions
+            test_frame = self.camera_manager.get_external_frame()
+            if test_frame is None:
+                print("Could not get test frame from external camera")
+                return False
+                
+            # Reset frame counter for keyframe generation
             self.frame_count["external"] = 0
             
             # Start sender thread
@@ -246,7 +265,7 @@ class VideoStreamer:
             self.threads.append(sender_thread)
             
             self.external_sending = True
-            print(f"Started external camera stream to {self.remote_ip}:{EXTERNAL_STREAM_PORT}")
+            print(f"Started external camera H.265 stream to {self.remote_ip}:{EXTERNAL_STREAM_PORT}")
             return True
         except Exception as e:
             print(f"Failed to start external camera stream: {e}")
@@ -256,20 +275,12 @@ class VideoStreamer:
         """Stop streaming the internal camera."""
         if self.internal_sending:
             self.internal_sending = False
-            # Release the encoder
-            if self.internal_codec:
-                self.internal_codec.release()
-                self.internal_codec = None
             print("Stopped internal camera stream")
     
     def _stop_external_stream(self) -> None:
         """Stop streaming the external camera."""
         if self.external_sending:
             self.external_sending = False
-            # Release the encoder
-            if self.external_codec:
-                self.external_codec.release()
-                self.external_codec = None
             print("Stopped external camera stream")
     
     def _stop_all_streams(self) -> None:
@@ -278,41 +289,209 @@ class VideoStreamer:
         self._stop_external_stream()
         print("All streams stopped")
     
-    def _encode_frame_h264(self, frame, codec, is_keyframe=False):
-        """Encode a frame using H.264 codec."""
-        # If codec creation failed, fall back to JPEG
-        if codec is None:
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]
-            _, jpeg_data = cv2.imencode('.jpg', frame, encode_param)
-            return jpeg_data.tobytes(), False  # False indicates not H.264
+    def _encode_frame(self, frame: np.ndarray, encoder: Any, is_keyframe: bool = False) -> Tuple[bytes, int]:
+        """
+        Encode a frame using H.265.
         
-        # Otherwise use H.264 encoding
-        if is_keyframe:
-            # Force keyframe - implementation depends on codec
-            # This is a simplified approach, actual implementation may vary
-            codec.write(frame)
-        else:
-            codec.write(frame)
+        Args:
+            frame: Input frame to encode
+            encoder: H.265 encoder object (not actually used, kept for API compatibility)
+            is_keyframe: Whether to force a keyframe
+            
+        Returns:
+            Tuple of (encoded_data, codec_type)
+        """
+        try:
+            # Use GStreamer to encode H.265 directly to memory
+            import gi
+            gi.require_version('Gst', '1.0')
+            from gi.repository import Gst, GLib
+            
+            # Initialize GStreamer if not already done
+            if not Gst.is_initialized():
+                Gst.init(None)
+            
+            # Create a pipeline for encoding a single frame to H.265
+            pipeline_str = (
+                f"appsrc name=src ! videoconvert ! video/x-raw,format=I420 ! "
+                f"x265enc bitrate={H265_BITRATE//1000} "
+            )
+            
+            # Add keyframe forcing if needed
+            if is_keyframe:
+                pipeline_str += "key-int-max=1 ! "
+            else:
+                pipeline_str += f"key-int-max={KEYFRAME_INTERVAL} ! "
+            
+            # Complete the pipeline
+            pipeline_str += (
+                f"video/x-h265,profile=main ! h265parse ! "
+                f"appsink name=sink sync=false"
+            )
+            
+            # Create pipeline
+            pipeline = Gst.parse_launch(pipeline_str)
+            
+            # Get source and sink elements
+            src = pipeline.get_by_name("src")
+            sink = pipeline.get_by_name("sink")
+            
+            # Prepare buffer with frame data
+            height, width = frame.shape[:2]
+            frame_size = width * height * 3  # RGB format
+            
+            # Convert frame to bytes
+            if frame.dtype != np.uint8:
+                frame = frame.astype(np.uint8)
+            
+            # Ensure frame is contiguous
+            if not frame.flags['C_CONTIGUOUS']:
+                frame = np.ascontiguousarray(frame)
+            
+            # Create buffer
+            buffer = Gst.Buffer.new_allocate(None, frame_size, None)
+            buffer.fill(0, frame.tobytes())
+            
+            # Set buffer timestamp and duration
+            buffer.pts = Gst.CLOCK_TIME_NONE
+            buffer.dts = Gst.CLOCK_TIME_NONE
+            buffer.duration = Gst.CLOCK_TIME_NONE
+            
+            # Start pipeline
+            pipeline.set_state(Gst.State.PLAYING)
+            
+            # Push buffer to source
+            src.emit("push-buffer", buffer)
+            src.emit("end-of-stream")
+            
+            # Get encoded data from sink
+            encoded_data = bytearray()
+            
+            # Pull samples until EOS
+            while True:
+                sample = sink.try_pull_sample(Gst.SECOND)
+                if sample is None:
+                    break
+                
+                buffer = sample.get_buffer()
+                
+                # Extract data from buffer
+                success, mapinfo = buffer.map(Gst.MapFlags.READ)
+                if success:
+                    encoded_data.extend(mapinfo.data)
+                    buffer.unmap(mapinfo)
+            
+            # Stop pipeline
+            pipeline.set_state(Gst.State.NULL)
+            
+            if len(encoded_data) == 0:
+                raise RuntimeError("No H.265 data produced by encoder")
+                
+            # Return encoded H.265 data
+            return bytes(encoded_data), CODEC_H265
+            
+        except Exception as e:
+            print(f"Error encoding with H.265: {e}")
+            raise RuntimeError(f"H.265 encoding failed: {e}")
+
+
+    # Method removed - we're using direct GStreamer decoding in _decode_frame
+    
+    def _decode_frame(self, data: bytes, codec_type: int, is_keyframe: bool, decoder: Any) -> np.ndarray:
+        """
+        Decode a frame from received data.
         
-        # For simplicity, this implementation uses a temporary file
-        # A more advanced implementation would capture the encoded data directly
+        Args:
+            data: Encoded frame data
+            codec_type: Type of encoding (CODEC_JPEG or CODEC_H265)
+            is_keyframe: Whether this is a keyframe
+            decoder: Decoder object (not used, kept for API compatibility)
+            
+        Returns:
+            Decoded frame
         
-        # Return encoded data and True to indicate H.264
-        # Note: In a real implementation, you would need to capture the encoded frames
-        # from the VideoWriter output, which requires additional code
-        
-        # Fallback to JPEG for this example implementation
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]
-        _, jpeg_data = cv2.imencode('.jpg', frame, encode_param)
-        return jpeg_data.tobytes(), False  # For actual implementation, return H.264 data and True
+        Raises:
+            RuntimeError: If decoding fails
+        """
+        try:
+            if codec_type == CODEC_JPEG:
+                # JPEG decoding is straightforward
+                frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if frame is None:
+                    raise RuntimeError("Failed to decode JPEG data")
+                return frame
+            elif codec_type == CODEC_H265:
+                # Use GStreamer for H.265 decoding
+                import gi
+                gi.require_version('Gst', '1.0')
+                from gi.repository import Gst, GLib
+                
+                # Initialize GStreamer if not already done
+                if not Gst.is_initialized():
+                    Gst.init(None)
+                
+                # Create pipeline for decoding H.265 data
+                pipeline_str = (
+                    "appsrc name=src ! "
+                    "h265parse ! avdec_h265 ! videoconvert ! "
+                    "video/x-raw,format=BGR ! appsink name=sink sync=false"
+                )
+                
+                pipeline = Gst.parse_launch(pipeline_str)
+                
+                # Get source and sink elements
+                src = pipeline.get_by_name("src")
+                sink = pipeline.get_by_name("sink")
+                
+                # Create buffer with H.265 data
+                buffer = Gst.Buffer.new_allocate(None, len(data), None)
+                buffer.fill(0, data)
+                
+                # Start pipeline
+                pipeline.set_state(Gst.State.PLAYING)
+                
+                # Push data into pipeline
+                src.emit("push-buffer", buffer)
+                src.emit("end-of-stream")
+                
+                # Get the decoded frame
+                sample = sink.try_pull_sample(Gst.SECOND)
+                if sample:
+                    buffer = sample.get_buffer()
+                    success, mapinfo = buffer.map(Gst.MapFlags.READ)
+                    
+                    if success:
+                        # Get frame dimensions from caps
+                        caps = sample.get_caps()
+                        structure = caps.get_structure(0)
+                        width = structure.get_value("width")
+                        height = structure.get_value("height")
+                        
+                        # Convert buffer to numpy array
+                        frame_data = mapinfo.data
+                        frame = np.frombuffer(frame_data, dtype=np.uint8)
+                        frame = frame.reshape((height, width, 3))
+                        
+                        buffer.unmap(mapinfo)
+                        
+                        # Stop pipeline
+                        pipeline.set_state(Gst.State.NULL)
+                        
+                        return frame
+                
+                # Stop pipeline if no sample was retrieved
+                pipeline.set_state(Gst.State.NULL)
+                raise RuntimeError("Failed to decode H.265 data")
+            else:
+                raise RuntimeError(f"Unknown codec type: {codec_type}")
+        except Exception as e:
+            raise RuntimeError(f"Error decoding frame: {e}")
+
 
     def _internal_receiver_loop(self) -> None:
-        """Receive internal camera H.264 stream from remote device."""
-        print(f"Starting internal camera H.264 receiver on port {INTERNAL_STREAM_PORT}")
+        """Receive internal camera stream from remote device."""
+        print(f"Starting internal camera H.265 receiver on port {INTERNAL_STREAM_PORT}")
         sock = self._create_udp_socket(INTERNAL_STREAM_PORT)
-        
-        # Initialize decoder
-        self.internal_decoder = self._initialize_h264_decoder()
         
         try:
             while self.running:
@@ -323,8 +502,8 @@ class VideoStreamer:
                     if len(data) < 6:  # Need at least 6 bytes for metadata
                         continue
                     
-                    # Parse metadata: [4 bytes size][1 byte is_h264][1 byte is_keyframe]
-                    frame_size, is_h264, is_keyframe = struct.unpack(">IBB", data[:6])
+                    # Parse metadata: [4 bytes size][1 byte codec_type][1 byte is_keyframe]
+                    frame_size, codec_type, is_keyframe = struct.unpack(">IBB", data[:6])
                     
                     # Rest of the packet contains the frame data
                     frame_data = data[6:]
@@ -333,16 +512,18 @@ class VideoStreamer:
                     if len(frame_data) != frame_size:
                         continue
                     
-                    # Decode frame
-                    frame = self._decode_frame(frame_data, is_h264, is_keyframe, self.internal_decoder)
-                    
-                    if frame is not None:
+                    try:
+                        # Decode frame
+                        frame = self._decode_frame(frame_data, codec_type, is_keyframe, None)
+                        
                         with self.lock:
                             self.received_internal_frame = frame
                         
                         # Call callback if registered
                         if self.on_internal_frame_received:
                             self.on_internal_frame_received(frame)
+                    except RuntimeError as e:
+                        print(f"Frame decoding error: {e}")
                 except socket.timeout:
                     # This is expected due to the socket timeout
                     pass
@@ -352,17 +533,12 @@ class VideoStreamer:
                         time.sleep(1.0)
         finally:
             sock.close()
-            if self.internal_decoder:
-                self.internal_decoder.release()
             print("Internal camera receiver stopped")
     
     def _external_receiver_loop(self) -> None:
-        """Receive external camera H.264 stream from remote device."""
-        print(f"Starting external camera H.264 receiver on port {EXTERNAL_STREAM_PORT}")
+        """Receive external camera stream from remote device."""
+        print(f"Starting external camera H.265 receiver on port {EXTERNAL_STREAM_PORT}")
         sock = self._create_udp_socket(EXTERNAL_STREAM_PORT)
-        
-        # Initialize decoder
-        self.external_decoder = self._initialize_h264_decoder()
         
         try:
             while self.running:
@@ -373,8 +549,8 @@ class VideoStreamer:
                     if len(data) < 6:  # Need at least 6 bytes for metadata
                         continue
                     
-                    # Parse metadata: [4 bytes size][1 byte is_h264][1 byte is_keyframe]
-                    frame_size, is_h264, is_keyframe = struct.unpack(">IBB", data[:6])
+                    # Parse metadata: [4 bytes size][1 byte codec_type][1 byte is_keyframe]
+                    frame_size, codec_type, is_keyframe = struct.unpack(">IBB", data[:6])
                     
                     # Rest of the packet contains the frame data
                     frame_data = data[6:]
@@ -383,16 +559,18 @@ class VideoStreamer:
                     if len(frame_data) != frame_size:
                         continue
                     
-                    # Decode frame
-                    frame = self._decode_frame(frame_data, is_h264, is_keyframe, self.external_decoder)
-                    
-                    if frame is not None:
+                    try:
+                        # Decode frame
+                        frame = self._decode_frame(frame_data, codec_type, is_keyframe, None)
+                        
                         with self.lock:
                             self.received_external_frame = frame
                         
                         # Call callback if registered
                         if self.on_external_frame_received:
                             self.on_external_frame_received(frame)
+                    except RuntimeError as e:
+                        print(f"Frame decoding error: {e}")
                 except socket.timeout:
                     # This is expected due to the socket timeout
                     pass
@@ -402,13 +580,11 @@ class VideoStreamer:
                         time.sleep(1.0)
         finally:
             sock.close()
-            if self.external_decoder:
-                self.external_decoder.release()
             print("External camera receiver stopped")
     
     def _internal_sender_loop(self) -> None:
-        """Send internal camera frames to remote device using H.264."""
-        print(f"Starting internal camera H.264 sender to {self.remote_ip}:{INTERNAL_STREAM_PORT}")
+        """Send internal camera frames to remote device using H.265."""
+        print(f"Starting internal camera sender to {self.remote_ip}:{INTERNAL_STREAM_PORT}")
         
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         
@@ -423,22 +599,22 @@ class VideoStreamer:
                         is_keyframe = (self.frame_count["internal"] % KEYFRAME_INTERVAL) == 0
                         self.frame_count["internal"] += 1
                         
-                        # Encode frame with H.264
-                        frame_data, is_h264 = self._encode_frame_h264(
-                            frame, self.internal_codec, is_keyframe
+                        # Encode frame with H.265 or fallback to JPEG
+                        frame_data, codec_type = self._encode_frame(
+                            frame, self.internal_encoder, is_keyframe
                         )
                         
                         # Create packet with metadata
-                        # Format: [4 bytes size][1 byte is_h264][1 byte is_keyframe][data]
+                        # Format: [4 bytes size][1 byte codec_type][1 byte is_keyframe][data]
                         frame_size = len(frame_data)
-                        metadata = struct.pack(">IBB", frame_size, is_h264, is_keyframe)
+                        metadata = struct.pack(">IBB", frame_size, codec_type, is_keyframe)
                         packet = metadata + frame_data
                         
                         # Send packet
                         sock.sendto(packet, (self.remote_ip, INTERNAL_STREAM_PORT))
                     
                     # Control frame rate
-                    time.sleep(0.033)  # ~30 fps
+                    time.sleep(1.0 / FRAME_RATE)
                 except Exception as e:
                     if self.running and self.internal_sending:
                         print(f"Error in internal sender: {e}")
@@ -448,8 +624,8 @@ class VideoStreamer:
             print("Internal camera sender stopped")
     
     def _external_sender_loop(self) -> None:
-        """Send external camera frames to remote device using H.264."""
-        print(f"Starting external camera H.264 sender to {self.remote_ip}:{EXTERNAL_STREAM_PORT}")
+        """Send external camera frames to remote device using H.265."""
+        print(f"Starting external camera sender to {self.remote_ip}:{EXTERNAL_STREAM_PORT}")
         
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         
@@ -464,22 +640,22 @@ class VideoStreamer:
                         is_keyframe = (self.frame_count["external"] % KEYFRAME_INTERVAL) == 0
                         self.frame_count["external"] += 1
                         
-                        # Encode frame with H.264
-                        frame_data, is_h264 = self._encode_frame_h264(
-                            frame, self.external_codec, is_keyframe
+                        # Encode frame with H.265 or fallback to JPEG
+                        frame_data, codec_type = self._encode_frame(
+                            frame, self.external_encoder, is_keyframe
                         )
                         
                         # Create packet with metadata
-                        # Format: [4 bytes size][1 byte is_h264][1 byte is_keyframe][data]
+                        # Format: [4 bytes size][1 byte codec_type][1 byte is_keyframe][data]
                         frame_size = len(frame_data)
-                        metadata = struct.pack(">IBB", frame_size, is_h264, is_keyframe)
+                        metadata = struct.pack(">IBB", frame_size, codec_type, is_keyframe)
                         packet = metadata + frame_data
                         
                         # Send packet
                         sock.sendto(packet, (self.remote_ip, EXTERNAL_STREAM_PORT))
                     
                     # Control frame rate
-                    time.sleep(0.033)  # ~30 fps
+                    time.sleep(1.0 / FRAME_RATE)
                 except Exception as e:
                     if self.running and self.external_sending:
                         print(f"Error in external sender: {e}")
@@ -488,20 +664,10 @@ class VideoStreamer:
             sock.close()
             print("External camera sender stopped")
 
-    def _initialize_h264_decoder(self):
-        """Initialize an H.264 decoder using OpenCV."""
-        # This is a simplified approach
-        return cv2.VideoCapture()
-    
-    def _decode_frame(self, data, is_h264, is_keyframe, decoder=None):
-        """Decode a frame from received data."""
-        if not is_h264:
-            # If not H.264, assume JPEG
-            return cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
-        else:
-            # H.264 decoding would go here
-            # For now, we'll fall back to JPEG as a placeholder
-            return cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+# Add a better method for direct H.265 encoding and decoding using GStreamer
+# Helper class removed since we're directly using GStreamer in the main class methods
+
 
 # Test function to run the video streamer standalone
 def test_video_streamer():
