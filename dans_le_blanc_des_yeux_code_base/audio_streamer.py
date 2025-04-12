@@ -236,14 +236,14 @@ class AudioStreamer:
                 else:
                     print("Using device names as fallback")
         
-        def _get_base_name(self, name):
-            """Get base name by removing numeric suffix if present."""
-            # Check if name ends with a numeric suffix (like .2, .3, etc.)
-            parts = name.split('.')
-            if len(parts) > 1 and parts[-1].isdigit():
-                # Return everything except the numeric suffix
-                return '.'.join(parts[:-1])
-            return name
+    def _get_base_name(self, name):
+        """Get base name by removing numeric suffix if present."""
+        # Check if name ends with a numeric suffix (like .2, .3, etc.)
+        parts = name.split('.')
+        if len(parts) > 1 and parts[-1].isdigit():
+            # Return everything except the numeric suffix
+            return '.'.join(parts[:-1])
+        return name
 
     def _set_mic_gains(self):
         """Set microphone gain levels using PulseAudio commands."""
