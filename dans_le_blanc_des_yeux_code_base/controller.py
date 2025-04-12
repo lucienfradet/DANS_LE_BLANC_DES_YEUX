@@ -51,6 +51,7 @@ if GSTREAMER_AVAILABLE:
 visualizer = None
 visualizer_active = False
 stop_input_thread = False
+service_mode = False
 
 def toggle_visualizer():
     """Toggle the visualizer on/off"""
@@ -75,6 +76,7 @@ def toggle_visualizer():
 def input_monitor():
     """Thread that monitors for user input to toggle visualizer"""
     global stop_input_thread
+    global service_mode
     
     print("\nCommand prompt ready. Type and press Enter:")
     print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
@@ -82,15 +84,16 @@ def input_monitor():
     while not stop_input_thread:
         try:
             # Read a single character
-            key = input().lower().strip()
-            if key == 'v':
-                toggle_visualizer()
-            elif key == 'q':
-                print("\nQuitting application...")
-                os.kill(os.getpid(), signal.SIGINT)
-            elif key:  # Any other command
-                print(f"Unknown command: '{key}'")
-                print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+            if not service_mode:
+                key = input().lower().strip()
+                if key == 'v':
+                    toggle_visualizer()
+                elif key == 'q':
+                    print("\nQuitting application...")
+                    os.kill(os.getpid(), signal.SIGINT)
+                elif key:  # Any other command
+                    print(f"Unknown command: '{key}'")
+                    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
         except Exception as e:
             if not stop_input_thread:  # Only log errors if we're still supposed to be running
                 print(f"\nInput monitor error: {e}")
@@ -407,12 +410,17 @@ def initialize_audio_components(remote_ip, config, disable_audio):
     return audio_streamer, audio_playback
 
 if __name__ == "__main__":
+    global service_mode
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Dans le Blanc des Yeux Controller')
     parser.add_argument('--visualize', action='store_true', help='Enable terminal visualization')
     parser.add_argument('--disable-video', action='store_true', help='Disable video components')
     parser.add_argument('--disable-audio', action='store_true', help='Disable audio components')
+    parser.add_argument('--service', action='store_true', help='Run in service mode (no input monitor)')
     args = parser.parse_args()
+
+    if args.service:
+        service_mode = True
     
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
