@@ -3,7 +3,7 @@ Main controller for the Dans le Blanc des Yeux installation.
 Uses SSH console input to toggle the visualizer.
 
 Usage:
-    python controller.py [--visualize] [--disable-video] [--disable-audio]
+    python controller.py [--visualize] [--disable-video] [--disable-audio] [--service]
 """
 
 import configparser
