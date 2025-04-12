@@ -435,7 +435,7 @@ class AudioStreamer:
                 'audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Convert to stereo
                 'audioconvert ! '
-                'wavenc ! '  # Use WAV encoding for reliable framing
+                'rtpL24pay ! '  # RTP with L24
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
         else:  # global
@@ -451,7 +451,7 @@ class AudioStreamer:
                 'audioconvert ! audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
                 'audioconvert ! '
-                'wavenc ! '  # Use WAV encoding for reliable framing
+                'rtpL24pay ! '  # RTP with L24
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
             )
     

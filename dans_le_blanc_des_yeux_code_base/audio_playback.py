@@ -211,7 +211,8 @@ class AudioPlayback:
             # Include a panorama element that we can adjust dynamically
             pipeline_str = (
                 f"udpsrc port={port} timeout=0 buffer-size=65536 ! "
-                "wavparse ! "  # Parse WAV format from UDP
+                "appication/x-rtp,media=audio,payload=96,clock-rate=44100,encoding-name=L24 ! "
+                "rtpL24depay ! "  # Parse WAV format from UDP
                 "queue ! "  # Add queue after parse
                 "audioconvert ! "
                 "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
@@ -220,6 +221,7 @@ class AudioPlayback:
                 "audioconvert ! "
                 "audioresample quality=10 ! "
                 "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
+                "autoaudiosink sync=false ! "
             )
             
             # Add device-specific sink if we found the default sink
