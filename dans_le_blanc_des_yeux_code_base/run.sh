@@ -32,6 +32,35 @@ do
     fi
 done
 
+# Check if already running using a lock file
+LOCK_FILE="/tmp/dans_le_blanc.lock"
+
+if [ -f "$LOCK_FILE" ]; then
+    # Check if process is still running
+    PID=$(cat "$LOCK_FILE")
+    if ps -p $PID > /dev/null; then
+        echo "ERROR: Application already running with PID $PID"
+        echo "Use 'kill $PID' to stop it first, or remove $LOCK_FILE if the process died unexpectedly"
+        exit 1
+    else
+        echo "Removing stale lock file"
+        rm -f "$LOCK_FILE"
+    fi
+fi
+
+# Create lock file with current PID
+echo $$ > "$LOCK_FILE"
+
+# Ensure cleanup on exit
+trap "rm -f $LOCK_FILE" EXIT
+
+# Kill any leftover processes from previous runs
+echo "Cleaning up any leftover processes..."
+pkill -f "python3 controller.py" || true
+sudo pkill X || true
+killall pulseaudio || true
+sleep 2
+
 # Ensure we're in the right directory
 cd "$(dirname "$0")"
 

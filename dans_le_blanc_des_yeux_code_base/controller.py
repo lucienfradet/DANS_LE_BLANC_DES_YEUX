@@ -3,7 +3,7 @@ Main controller for the Dans le Blanc des Yeux installation.
 Uses SSH console input to toggle the visualizer.
 
 Usage:
-    python controller.py [--visualize] [--disable-video] [--disable-audio] [--service]
+    python controller.py [--visualize] [--disable-video] [--disable-audio]
 """
 
 import configparser
@@ -412,7 +412,6 @@ if __name__ == "__main__":
     parser.add_argument('--visualize', action='store_true', help='Enable terminal visualization')
     parser.add_argument('--disable-video', action='store_true', help='Disable video components')
     parser.add_argument('--disable-audio', action='store_true', help='Disable audio components')
-    parser.add_argument('--service', action='store_true', help='Run in service mode without input monitor')
     args = parser.parse_args()
     
     # Register signal handlers for graceful shutdown
@@ -429,13 +428,10 @@ if __name__ == "__main__":
             visualizer.start()
             visualizer_active = True
         
-        # Start input monitor thread only if not in service mode
-        if not args.service:
-            input_thread = threading.Thread(target=input_monitor)
-            input_thread.daemon = True
-            input_thread.start()
-        else:
-            print("Running in service mode. Input monitor disabled.")
+        # Start input monitor thread
+        input_thread = threading.Thread(target=input_monitor)
+        input_thread.daemon = True
+        input_thread.start()
         
         # Initialize core components
         remote_ip, config, core_components = initialize_components()
