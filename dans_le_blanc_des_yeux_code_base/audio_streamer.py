@@ -435,7 +435,9 @@ class AudioStreamer:
                 'audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Convert to stereo
                 'audioconvert ! '
-                'rtpL24pay ! '  # RTP with L24
+                'audioresample ! '
+                'alawenc ! '
+                'rtppcmapay ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=8192'
             )
         else:  # global
@@ -451,7 +453,9 @@ class AudioStreamer:
                 # 'audioconvert ! audioresample ! '
                 # 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
                 'audioconvert ! '
-                'rtpL24pay ! '  # RTP with L24
+                'audioresample ! '
+                'alawenc ! '
+                'rtppcmapay ! '
                 f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=8192'
             )
     

@@ -38,7 +38,7 @@ from system_state import system_state
 from audio_streamer import AudioStreamer
 
 # Audio configuration
-RATE = 16000
+RATE = 8000
 CHANNELS = 2
 
 class AudioPlayback:
@@ -211,16 +211,17 @@ class AudioPlayback:
             # Include a panorama element that we can adjust dynamically
             pipeline_str = (
                 f"udpsrc port={port} timeout=0 buffer-size=8192 ! "
-                "application/x-rtp,media=audio,payload=96,clock-rate=44100,encoding-name=L24 ! "
-                "rtpL24depay ! "  # Parse WAV format from UDP
+                f"application/x-rtp,media=audio,payload=8,clock-rate={RATE},encoding-name=PCMA ! "
+                "rtppcmadepay ! "  # Parse WAV format from UDP
+                "alawdec ! "
                 "queue ! "  # Add queue after parse
                 "audioconvert ! "
-                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
+                f"audio/x-raw, format=S16LE, channels=2, rate={RATE} ! "
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
                 "queue ! "  # Add queue after panorama
                 "audioconvert ! "
                 "audioresample quality=2 ! "
-                "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
+                f"audio/x-raw, format=S16LE, channels=2, rate={RATE} ! "
                 # "autoaudiosink sync=false ! "
             )
             
