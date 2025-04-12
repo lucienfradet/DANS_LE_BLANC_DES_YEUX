@@ -72,19 +72,30 @@ echo "Installing Python packages..."
 su - $SUDO_USER -c "~/dans_le_blanc_des_yeux_env/bin/pip install -r $(pwd)/requirements.txt"
 su - $SUDO_USER -c "~/dans_le_blanc_des_yeux_env/bin/pip install opencv-python pythonosc pyserial numpy"
 
+echo "Creating symlinks in /opt"
+
+
 # Configure auto-start
 echo "Setting up auto-start on boot..."
-cat > /etc/systemd/system/dans-le-blanc-des-yeux.service << EOF
+cat > /etc/systemd/system/dans-le-blanc.service << EOF
 [Unit]
 Description=Dans le Blanc des Yeux Art Installation
-After=network.target
+After=network-online.target pulseaudio.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
+Type=simple
 User=$SUDO_USER
-WorkingDirectory=$(pwd)
-ExecStart=/bin/bash $(pwd)/run.sh
-Restart=always
-RestartSec=10
+WorkingDirectory=/home/pi1/dans_le_blanc_des_yeux_code_base
+ExecStart=/bin/bash -c 'source /home/pi1/dans_le_blanc_des_yeux_env/bin/activate && /home/pi1/dans_le_blanc_des_yeux_code_base/run.sh'
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dans-le-blanc
+Environment="DISPLAY=:0"
 
 [Install]
 WantedBy=multi-user.target
