@@ -38,7 +38,7 @@ from system_state import system_state
 Gst.init(None)
 
 # Audio configuration
-RATE = 44100
+RATE = 16000
 CHANNELS = 2
 
 # Define ports for different mic types
@@ -429,14 +429,14 @@ class AudioStreamer:
                 device_param = f'device="{self.personal_mic_name}"'
                 
             return (
-                f'pulsesrc {device_param} ! '
-                'audio/x-raw, rate=44100, channels=1 ! '  # Explicitly set mono input
+                f'pulsesrc {device_param} buffer-time=10000 ! '
+                f'audio/x-raw, rate={RATE}, channels=1 ! '  # Explicitly set mono input
                 'audioconvert ! '
                 'audioresample ! '
                 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '  # Convert to stereo
                 'audioconvert ! '
                 'rtpL24pay ! '  # RTP with L24
-                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
+                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=8192'
             )
         else:  # global
             # Similar changes for global mic
@@ -446,13 +446,13 @@ class AudioStreamer:
                 device_param = f'device="{self.global_mic_name}"'
                 
             return (
-                f'pulsesrc {device_param} ! '
+                f'pulsesrc {device_param} buffer-time=10000 ! '
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
-                'audioconvert ! audioresample ! '
-                'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
+                # 'audioconvert ! audioresample ! '
+                # 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
                 'audioconvert ! '
                 'rtpL24pay ! '  # RTP with L24
-                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=65536'
+                f'udpsink host={self.remote_ip} port={port} sync=false buffer-size=8192'
             )
     
     def _create_all_pipelines(self) -> bool:

@@ -38,7 +38,7 @@ from system_state import system_state
 from audio_streamer import AudioStreamer
 
 # Audio configuration
-RATE = 44100
+RATE = 16000
 CHANNELS = 2
 
 class AudioPlayback:
@@ -210,7 +210,7 @@ class AudioPlayback:
             # Create pipeline for receiving WAV-formatted UDP audio and playing it
             # Include a panorama element that we can adjust dynamically
             pipeline_str = (
-                f"udpsrc port={port} timeout=0 buffer-size=65536 ! "
+                f"udpsrc port={port} timeout=0 buffer-size=8192 ! "
                 "application/x-rtp,media=audio,payload=96,clock-rate=44100,encoding-name=L24 ! "
                 "rtpL24depay ! "  # Parse WAV format from UDP
                 "queue ! "  # Add queue after parse
@@ -219,16 +219,16 @@ class AudioPlayback:
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
                 "queue ! "  # Add queue after panorama
                 "audioconvert ! "
-                "audioresample quality=10 ! "
+                "audioresample quality=2 ! "
                 "audio/x-raw, format=S16LE, channels=2, rate=44100 ! "
                 # "autoaudiosink sync=false ! "
             )
             
             # Add device-specific sink if we found the default sink
             if default_sink:
-                pipeline_str += f'pulsesink sync=false async=false device="{default_sink}"'
+                pipeline_str += f'pulsesink sync=false async=false buffer-time=20000 latency-time=10000 device="{default_sink}"'
             else:
-                pipeline_str += 'pulsesink sync=false async=false'
+                pipeline_str += 'pulsesink sync=false async=false buffer-time=20000 latency-time=10000'
             
             print(f"Creating {name} playback pipeline: {pipeline_str}")
             
