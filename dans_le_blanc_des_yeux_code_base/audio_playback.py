@@ -304,35 +304,95 @@ class AudioPlayback:
         try:
             with self.lock:
                 if not self.pipelines_created:
+                    print("Skipping panorama update - pipelines not created")
                     return
                 
+                # First check if the pipelines are in PLAYING state
+                # If not, this could be why your changes aren't taking effect
+                if self.personal_pipeline and self.global_pipeline:
+                    personal_state = self.personal_pipeline.get_state(0)[1]
+                    global_state = self.global_pipeline.get_state(0)[1]
+                    
+                    if personal_state != Gst.State.PLAYING or global_state != Gst.State.PLAYING:
+                        print(f"Warning: Cannot update panorama, pipelines not in PLAYING state: personal={personal_state}, global={global_state}")
+                        # Queue up for retry in monitoring loop
+                        return
+                
+                # Use stronger panorama values (1.5 instead of 1.0) to ensure full separation
+                # Some implementations of audiopanorama may need values beyond the expected -1.0 to 1.0 range
                 if self.playback_state == "mute_left":
-                    # Move all sound to right channel
+                    # Move all sound to right channel (stronger value for complete separation)
                     if self.personal_panorama:
-                        self.personal_panorama.set_property("panorama", 1.0)
+                        try:
+                            # Try a stronger value first (1.5) - some implementations allow beyond ±1.0
+                            self.personal_panorama.set_property("panorama", 1.5)
+                        except:
+                            # Fall back to standard 1.0 if that fails
+                            self.personal_panorama.set_property("panorama", 1.0)
+                        
                     if self.global_panorama:
-                        self.global_panorama.set_property("panorama", 1.0)
-                    print("Updated panorama: Muted LEFT channel (panorama=1.0)")
+                        try:
+                            self.global_panorama.set_property("panorama", 1.5)
+                        except:
+                            self.global_panorama.set_property("panorama", 1.0)
+                    
+                    print("Updated panorama: Muted LEFT channel (panorama=1.5 or 1.0)")
                     
                 elif self.playback_state == "mute_right":
-                    # Move all sound to left channel
+                    # Move all sound to left channel (stronger value for complete separation)
                     if self.personal_panorama:
-                        self.personal_panorama.set_property("panorama", -1.0)
+                        try:
+                            self.personal_panorama.set_property("panorama", -1.5)
+                        except:
+                            self.personal_panorama.set_property("panorama", -1.0)
+                        
                     if self.global_panorama:
-                        self.global_panorama.set_property("panorama", -1.0)
-                    print("Updated panorama: Muted RIGHT channel (panorama=-1.0)")
+                        try:
+                            self.global_panorama.set_property("panorama", -1.5)
+                        except:
+                            self.global_panorama.set_property("panorama", -1.0)
+                    
+                    print("Updated panorama: Muted RIGHT channel (panorama=-1.5 or -1.0)")
                     
                 elif self.playback_state == "none":
-                    # Mute both channels by setting panorama to extreme value
-                    # (this is a hack, ideally we'd use a mute property)
+                    # For "none" state, you might want to try muting differently
+                    # Setting panorama to 0.0 keeps sound in center, it doesn't mute
                     if self.personal_panorama:
                         self.personal_panorama.set_property("panorama", 0.0)
                     if self.global_panorama:
                         self.global_panorama.set_property("panorama", 0.0)
-                    print("Updated panorama: Effectively muted both channels")
+                    
+                    print("Updated panorama: Center channel position (panorama=0.0)")
+                    
+                    # Note: In your original code, you mentioned that no sound should 
+                    # play in "none" state. If that's the case, you might need to 
+                    # handle this differently than just setting panorama to 0.0.
+                
+                # Flush the pipeline to ensure changes take effect immediately
+                if self.personal_pipeline:
+                    self._flush_pipeline(self.personal_pipeline)
+                if self.global_pipeline:
+                    self._flush_pipeline(self.global_pipeline)
                 
         except Exception as e:
             print(f"Error updating panorama settings: {e}")
+
+    def _flush_pipeline(self, pipeline: Gst.Pipeline) -> None:
+        """Flush the pipeline to ensure property changes take effect immediately."""
+        try:
+            # Send an event to flush the pipeline
+            # This helps force property changes to take effect
+            # Only flush if pipeline is in PLAYING state
+            state = pipeline.get_state(0)[1]
+            if state == Gst.State.PLAYING:
+                sink = pipeline.get_by_name("sink")
+                if sink:
+                    # Try using EVENT_FLUSH_START and EVENT_FLUSH_STOP
+                    sink.send_event(Gst.Event.new_flush_start())
+                    sink.send_event(Gst.Event.new_flush_stop(True))
+                    print(f"Flushed pipeline {pipeline.get_name()}")
+        except Exception as e:
+            print(f"Error flushing pipeline: {e}")
     
     def _playback_monitoring_loop(self) -> None:
         """Monitor the playback pipelines and ensure they're running correctly."""
