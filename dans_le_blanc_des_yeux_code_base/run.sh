@@ -5,7 +5,7 @@
 #   visual - Enable terminal visualization (optional)
 #   disable-video - Disable video components (optional)
 #   disable-audio - Disable audio components (optional)
-#   service - Run in service mode without input monitor (optional)
+#   service - Run in service mode (no input monitor) (optional)
 
 # Parse arguments
 ENABLE_VISUAL=0
@@ -31,35 +31,6 @@ do
         echo "Running in service mode (no input monitor)"
     fi
 done
-
-# Check if already running using a lock file
-LOCK_FILE="/tmp/dans_le_blanc.lock"
-
-if [ -f "$LOCK_FILE" ]; then
-    # Check if process is still running
-    PID=$(cat "$LOCK_FILE")
-    if ps -p $PID > /dev/null; then
-        echo "ERROR: Application already running with PID $PID"
-        echo "Use 'kill $PID' to stop it first, or remove $LOCK_FILE if the process died unexpectedly"
-        exit 1
-    else
-        echo "Removing stale lock file"
-        rm -f "$LOCK_FILE"
-    fi
-fi
-
-# Create lock file with current PID
-echo $$ > "$LOCK_FILE"
-
-# Ensure cleanup on exit
-trap "rm -f $LOCK_FILE" EXIT
-
-# Kill any leftover processes from previous runs
-echo "Cleaning up any leftover processes..."
-pkill -f "python3 controller.py" || true
-sudo pkill X || true
-killall pulseaudio || true
-sleep 2
 
 # Ensure we're in the right directory
 cd "$(dirname "$0")"
@@ -364,14 +335,12 @@ python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository impo
 # Start the application with appropriate arguments
 echo "Starting Dans le Blanc des Yeux..."
 
-# Only show commands if not in service mode
+# Display console commands only if not in service mode
 if [ $SERVICE_MODE -eq 0 ]; then
     echo "Console commands available:"
     echo "- Type 'v' and press Enter to toggle the visualizer on/off"
     echo "- Type 'q' and press Enter to quit the application"
     echo "- Press Ctrl+C to stop the application"
-else
-    echo "Running in service mode (no console commands available)"
 fi
 
 # Set up arguments
