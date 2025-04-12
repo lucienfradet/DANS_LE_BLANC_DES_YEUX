@@ -387,8 +387,7 @@ if [ $DISABLE_AUDIO -eq 1 ]; then
 fi
 
 if [ $SERVICE_MODE -eq 1 ]; then
-    ARGS="$ARGS"
-    # ARGS="$ARGS --service"
+    ARGS="$ARGS --service"
 fi
 
 if [ $DISABLE_VIDEO -eq 0 ]; then
