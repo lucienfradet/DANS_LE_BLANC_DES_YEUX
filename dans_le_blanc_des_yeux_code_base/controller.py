@@ -51,7 +51,6 @@ if GSTREAMER_AVAILABLE:
 visualizer = None
 visualizer_active = False
 stop_input_thread = False
-service_mode = False
 
 def toggle_visualizer():
     """Toggle the visualizer on/off"""
@@ -76,7 +75,6 @@ def toggle_visualizer():
 def input_monitor():
     """Thread that monitors for user input to toggle visualizer"""
     global stop_input_thread
-    global service_mode
     
     print("\nCommand prompt ready. Type and press Enter:")
     print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
@@ -84,19 +82,18 @@ def input_monitor():
     while not stop_input_thread:
         try:
             # Read a single character
-            if not service_mode:
-                key = input().lower().strip()
-                if key == 'v':
-                    toggle_visualizer()
-                elif key == 'q':
-                    print("\nQuitting application...")
-                    os.kill(os.getpid(), signal.SIGINT)
-                elif key:  # Any other command
-                    print(f"Unknown command: '{key}'")
-                    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+            key = input().lower().strip()
+            if key == 'v':
+                toggle_visualizer()
+            elif key == 'q':
+                print("\nQuitting application...")
+                os.kill(os.getpid(), signal.SIGINT)
+            elif key:  # Any other command
+                print(f"Unknown command: '{key}'")
+                print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
         except Exception as e:
-            if not stop_input_thread:  # Only log errors if we're still supposed to be running
-                print(f"\nInput monitor error: {e}")
+            # if not stop_input_thread:  # Only log errors if we're still supposed to be running
+                # print(f"\nInput monitor error: {e}")
             time.sleep(0.5)
 
 def signal_handler(sig, frame):
@@ -417,9 +414,6 @@ if __name__ == "__main__":
     parser.add_argument('--disable-audio', action='store_true', help='Disable audio components')
     parser.add_argument('--service', action='store_true', help='Run in service mode (no input monitor)')
     args = parser.parse_args()
-
-    if args.service:
-        service_mode = True
     
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
