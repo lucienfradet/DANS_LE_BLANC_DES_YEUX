@@ -59,7 +59,7 @@ class VideoDisplay:
         
         # Display options
         self.display_options = {
-            'show_info_overlay': True,   # Show text overlay with source info
+            'show_info_overlay': False,   # Show text overlay with source info
             'fullscreen': True,          # Run in fullscreen mode
             'center_frame': False,        # Center the frame on screen (overrides position)
             'preserve_aspect_ratio': True, # Keep aspect ratio when scaling
@@ -92,7 +92,7 @@ class VideoDisplay:
         self.external_frame_updated = threading.Event()
         
         # Debugging
-        self.debug_mode = True  # Set to True for debug overlay
+        self.debug_mode = False  # Set to True for debug overlay
         
         print("Video display initialized with settings:")
         print(f"Display dimensions: {self.window_width}x{self.window_height}")
