@@ -120,12 +120,12 @@ class AudioStreamer:
             print("Using default audio device names and gain settings")
     
     def _find_audio_devices(self):
-        """Find audio devices using pactl command-line tool with exact name matching and retries."""
+        """Find audio devices using pactl command-line tool with flexible name matching and retries."""
         self.personal_mic_id = None
         self.global_mic_id = None
         
         max_attempts = 3  # Try up to 3 times
-        retry_delay = 3   # Wait 2 seconds between attempts
+        retry_delay = 3   # Wait 3 seconds between attempts
         
         for attempt in range(1, max_attempts + 1):
             try:
@@ -169,17 +169,41 @@ class AudioStreamer:
                     devices.append((current_device, current_name))
                 
                 print(f"Found {len(devices)} audio input devices:")
+                
                 for device_id, device_name in devices:
                     print(f"  - {device_name} (ID: {device_id})")
                     
-                    # Exact name matching
-                    if device_name == self.personal_mic_name:
-                        self.personal_mic_id = device_id
-                        print(f"    → Matched as personal mic (exact match)")
+                    # Try to match personal mic
+                    if not self.personal_mic_id:
+                        # First try exact match
+                        if device_name == self.personal_mic_name:
+                            self.personal_mic_id = device_id
+                            print(f"    → Matched as personal mic (exact match)")
+                        else:
+                            # Try matching base name (remove numeric suffix if any)
+                            configured_base = self._get_base_name(self.personal_mic_name)
+                            device_base = self._get_base_name(device_name)
+                            
+                            # Check if the base names match
+                            if configured_base == device_base:
+                                self.personal_mic_id = device_id
+                                print(f"    → Matched as personal mic (base name match: {configured_base})")
                     
-                    if device_name == self.global_mic_name:
-                        self.global_mic_id = device_id
-                        print(f"    → Matched as global mic (exact match)")
+                    # Try to match global mic
+                    if not self.global_mic_id:
+                        # First try exact match
+                        if device_name == self.global_mic_name:
+                            self.global_mic_id = device_id
+                            print(f"    → Matched as global mic (exact match)")
+                        else:
+                            # Try matching base name (remove numeric suffix if any)
+                            configured_base = self._get_base_name(self.global_mic_name)
+                            device_base = self._get_base_name(device_name)
+                            
+                            # Check if the base names match
+                            if configured_base == device_base:
+                                self.global_mic_id = device_id
+                                print(f"    → Matched as global mic (base name match: {configured_base})")
                 
                 # If we found both devices, we're done
                 if self.personal_mic_id and self.global_mic_id:
@@ -198,9 +222,9 @@ class AudioStreamer:
                     
                 # Check if we found our devices after all attempts
                 if not self.personal_mic_id:
-                    print(f"WARNING: Could not find personal mic with exact name '{self.personal_mic_name}'")
+                    print(f"WARNING: Could not find personal mic with name matching '{self.personal_mic_name}'")
                 if not self.global_mic_id:
-                    print(f"WARNING: Could not find global mic with exact name '{self.global_mic_name}'")
+                    print(f"WARNING: Could not find global mic with name matching '{self.global_mic_name}'")
                     
             except Exception as e:
                 print(f"Error discovering audio devices (attempt {attempt}/{max_attempts}): {e}")
@@ -211,6 +235,15 @@ class AudioStreamer:
                     time.sleep(retry_delay)
                 else:
                     print("Using device names as fallback")
+        
+        def _get_base_name(self, name):
+            """Get base name by removing numeric suffix if present."""
+            # Check if name ends with a numeric suffix (like .2, .3, etc.)
+            parts = name.split('.')
+            if len(parts) > 1 and parts[-1].isdigit():
+                # Return everything except the numeric suffix
+                return '.'.join(parts[:-1])
+            return name
 
     def _set_mic_gains(self):
         """Set microphone gain levels using PulseAudio commands."""

@@ -430,12 +430,12 @@ if __name__ == "__main__":
             visualizer_active = True
         
         # Start input monitor thread only if not in service mode
-        if not args.service:
+        # if not args.service:
             input_thread = threading.Thread(target=input_monitor)
             input_thread.daemon = True
             input_thread.start()
-        else:
-            print("Running in service mode - input monitor disabled")
+        # else:
+        #     print("Running in service mode - input monitor disabled")
         
         # Initialize core components
         remote_ip, config, core_components = initialize_components()
@@ -454,18 +454,8 @@ if __name__ == "__main__":
         if not args.disable_video:
             camera_manager, video_streamer, video_display = initialize_video_components(remote_ip, config, args.disable_video)
         
-        # Keep main thread alive with appropriate behavior based on mode
-        heartbeat_counter = 0
         while True:
             time.sleep(1)
-            
-            # In service mode, provide a heartbeat log every 5 minutes
-            # to show the service is still running
-            if args.service:
-                heartbeat_counter += 1
-                if heartbeat_counter >= 300:  # Every 5 minutes (300 seconds)
-                    print(f"Service heartbeat: System running for {heartbeat_counter} seconds. System state: {system_state.get_status_summary()}")
-                    heartbeat_counter = 0
             
     except KeyboardInterrupt:
         print("\nUser requested shutdown.")
