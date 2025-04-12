@@ -410,7 +410,6 @@ def initialize_audio_components(remote_ip, config, disable_audio):
     return audio_streamer, audio_playback
 
 if __name__ == "__main__":
-    global service_mode
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Dans le Blanc des Yeux Controller')
     parser.add_argument('--visualize', action='store_true', help='Enable terminal visualization')
