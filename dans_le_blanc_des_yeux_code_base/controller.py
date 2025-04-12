@@ -1,6 +1,6 @@
 """
 Main controller for the Dans le Blanc des Yeux installation.
-Uses SSH console input to toggle the visualizer when available.
+Uses SSH console input to toggle the visualizer.
 
 Usage:
     python controller.py [--visualize] [--disable-video] [--disable-audio]
@@ -51,31 +51,6 @@ if GSTREAMER_AVAILABLE:
 visualizer = None
 visualizer_active = False
 stop_input_thread = False
-input_thread = None  # Track the input thread
-
-def is_input_available():
-    """
-    Check if interactive input is available.
-    Returns True if stdin is accessible for reading, False otherwise.
-    """
-    try:
-        # Check if stdin is a TTY (terminal)
-        if not sys.stdin.isatty():
-            return False
-        
-        # Try to get stdin fileno to verify it's valid
-        try:
-            fileno = sys.stdin.fileno()
-        except (ValueError, IOError):
-            return False
-        
-        # Check if stdin is readable using select
-        import select
-        readable, _, _ = select.select([sys.stdin], [], [], 0)
-        return bool(readable) or True  # Return True even if nothing is immediately readable
-    except Exception as e:
-        print(f"Error checking input availability: {e}")
-        return False
 
 def toggle_visualizer():
     """Toggle the visualizer on/off"""
@@ -101,43 +76,29 @@ def input_monitor():
     """Thread that monitors for user input to toggle visualizer"""
     global stop_input_thread
     
-    # Check if input is available before starting the monitor
-    if not is_input_available():
-        print("Input not available - command prompt disabled")
-        return
-    
     print("\nCommand prompt ready. Type and press Enter:")
     print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
     
     while not stop_input_thread:
         try:
-            # Non-blocking input using select
-            import select
-            ready, _, _ = select.select([sys.stdin], [], [], 0.5)
-            
-            if ready:
-                # Read input
-                key = sys.stdin.readline().lower().strip()
-                if key == 'v':
-                    toggle_visualizer()
-                elif key == 'q':
-                    print("\nQuitting application...")
-                    os.kill(os.getpid(), signal.SIGINT)
-                elif key:  # Any other command
-                    print(f"Unknown command: '{key}'")
-                    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+            # Read a single character
+            key = input().lower().strip()
+            if key == 'v':
+                toggle_visualizer()
+            elif key == 'q':
+                print("\nQuitting application...")
+                os.kill(os.getpid(), signal.SIGINT)
+            elif key:  # Any other command
+                print(f"Unknown command: '{key}'")
+                print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
         except Exception as e:
             if not stop_input_thread:  # Only log errors if we're still supposed to be running
                 print(f"\nInput monitor error: {e}")
-                # If we get an error, input might no longer be available
-                if not is_input_available():
-                    print("Input no longer available - disabling command prompt")
-                    break
             time.sleep(0.5)
 
 def signal_handler(sig, frame):
     """Handle shutdown signals gracefully with updated audio component handling."""
-    global stop_input_thread, input_thread
+    global stop_input_thread
     print("\nShutting down... Please wait.")
     stop_input_thread = True
     
@@ -217,13 +178,6 @@ def signal_handler(sig, frame):
             print("Visualizer stopped successfully")
         except Exception as e:
             print(f"Error stopping visualizer: {e}")
-    
-    # Wait for input thread to finish if it exists and is alive
-    if input_thread is not None and input_thread.is_alive():
-        try:
-            input_thread.join(timeout=1.0)  # Wait up to 1 second for it to finish
-        except Exception as e:
-            print(f"Error joining input thread: {e}")
     
     print("Shutdown complete.")
     sys.exit(0)
@@ -474,17 +428,10 @@ if __name__ == "__main__":
             visualizer.start()
             visualizer_active = True
         
-        # Check if input is available before starting the input thread
-        input_available = is_input_available()
-        if input_available:
-            print("Interactive input is available, enabling command prompt...")
-            # Start input monitor thread
-            input_thread = threading.Thread(target=input_monitor)
-            input_thread.daemon = True
-            input_thread.start()
-        else:
-            print("Interactive input is not available, running in non-interactive mode")
-            input_thread = None  # No input thread needed
+        # Start input monitor thread
+        input_thread = threading.Thread(target=input_monitor)
+        input_thread.daemon = True
+        input_thread.start()
         
         # Initialize core components
         remote_ip, config, core_components = initialize_components()
@@ -492,7 +439,7 @@ if __name__ == "__main__":
         # Keep references to avoid garbage collection
         osc_handler, serial_handler, motor_controller = core_components
         
-        # Initialize audio first with persistent pipeline implementation
+        # Initialize audio first with new persistent pipeline implementation
         if not args.disable_audio:
             print("Initializing persistent audio components...")
             audio_streamer, audio_playback = initialize_audio_components(remote_ip, config, args.disable_audio)
@@ -503,8 +450,7 @@ if __name__ == "__main__":
         if not args.disable_video:
             camera_manager, video_streamer, video_display = initialize_video_components(remote_ip, config, args.disable_video)
         
-        # Keep main thread alive
-        print("System running - use CTRL+C to exit")
+        # Keep main thread alive while the input thread handles commands
         while True:
             time.sleep(1)
             
