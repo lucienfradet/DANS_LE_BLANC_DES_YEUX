@@ -146,6 +146,42 @@ class VideoStreamer:
         
         print("Video streamer stopped")
     
+    def _on_state_change(self, changed_state: str) -> None:
+        """Handle system state changes.
+        
+        This method is called whenever the system state changes (local or remote).
+        It determines whether to start or stop streaming based on the current state.
+        
+        Args:
+            changed_state: The name of the state that changed ("local" or "remote")
+        """
+        if changed_state in ["local", "remote"]:
+            self._update_streaming_based_on_state()
+            
+    def _update_streaming_based_on_state(self) -> None:
+        """Update streaming state based on the current system state."""
+        local_state = system_state.get_local_state()
+        remote_state = system_state.get_remote_state()
+        
+        # Only proceed if remote is connected
+        if not remote_state.get("connected", False):
+            self._stop_all_streams()
+            return
+        
+        # Case 1: Both have pressure - stream internal cameras
+        if local_state.get("pressure", False) and remote_state.get("pressure", False):
+            self._start_internal_stream()
+            self._stop_external_stream()
+        
+        # Case 2: Remote has pressure but local doesn't - stream our external camera
+        elif remote_state.get("pressure", False) and not local_state.get("pressure", False):
+            self._start_external_stream()
+            self._stop_internal_stream()
+        
+        # Case 3: No streaming needed (local has pressure but remote doesn't, or neither has pressure)
+        else:
+            self._stop_all_streams()
+
     def _create_decoder_pipelines(self):
         """Create GStreamer pipelines for decoding."""
         if not self.has_gstreamer:
