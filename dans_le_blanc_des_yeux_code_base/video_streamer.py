@@ -258,15 +258,6 @@ class VideoStreamer:
                 f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0"
             )
             
-            # Alternatively, if omxh264enc doesn't work, try x264enc (software encoder)
-            # pipeline_str = (
-            #    f"appsrc name=src format=time is-live=true do-timestamp=true ! "
-            #    f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-            #    f"x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 ! "
-            #    f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
-            #    f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0"
-            # )
-            
             self.internal_sender_pipeline = Gst.parse_launch(pipeline_str)
             
             # Get appsrc element
@@ -306,15 +297,6 @@ class VideoStreamer:
                 f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
                 f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0"
             )
-            
-            # Alternatively, if omxh264enc doesn't work, try x264enc (software encoder)
-            # pipeline_str = (
-            #    f"appsrc name=src format=time is-live=true do-timestamp=true ! "
-            #    f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-            #    f"x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 ! "
-            #    f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
-            #    f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0"
-            # )
             
             self.external_sender_pipeline = Gst.parse_launch(pipeline_str)
             
