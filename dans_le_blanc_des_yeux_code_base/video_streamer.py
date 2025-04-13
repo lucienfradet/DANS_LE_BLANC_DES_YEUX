@@ -188,13 +188,9 @@ class VideoStreamer:
             pipeline_str = (
                 f"appsrc name=src format=time is-live=true do-timestamp=true ! "
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-                f"v4l2h264enc extra-controls=\"controls,video_bitrate=2000000\" ! "  # Hardware encoding
-                f"video/x-h264,profile=high ! "
-                f"h264parse ! "
-                f"rtph264pay config-interval=1 aggregate-mode=zero-latency ! "
-                f"queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! "
-                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} "
-                f"sync=false buffer-size=524288"
+                f"x265enc bitrate=2000 tune=zerolatency speed-preset=superfast ! "
+                f"rtph265pay config-interval=1 ! "
+                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false"
             )
             
             self.internal_sender_pipeline = Gst.parse_launch(pipeline_str)
@@ -232,13 +228,9 @@ class VideoStreamer:
             pipeline_str = (
                 f"appsrc name=src format=time is-live=true do-timestamp=true ! "
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-                f"v4l2h264enc extra-controls=\"controls,video_bitrate=2000000\" ! "  # Hardware encoding
-                f"video/x-h264,profile=high ! "
-                f"h264parse ! "
-                f"rtph264pay config-interval=1 aggregate-mode=zero-latency ! "
-                f"queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! "
-                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} "
-                f"sync=false buffer-size=524288"
+                f"x265enc bitrate=2000 tune=zerolatency speed-preset=superfast ! "
+                f"rtph265pay config-interval=1 ! "
+                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false"
             )
             
             self.external_sender_pipeline = Gst.parse_launch(pipeline_str)
@@ -270,13 +262,10 @@ class VideoStreamer:
         try:
             # Create pipeline in null state
             pipeline_str = (
-                f"udpsrc port={INTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\" "
-                f"buffer-size=524288 ! "
-                f"rtpjitterbuffer latency=100 drop-on-latency=true ! "  # Handle network jitter
-                f"rtph264depay ! h264parse ! "
-                f"v4l2h264dec ! "  # Hardware decoding
+                f"udpsrc port={INTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H265,payload=96\" ! "
+                f"rtph265depay ! h265parse ! avdec_h265 ! "
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=sink max-buffers=2 drop=true sync=false"
+                f"appsink name=sink max-buffers=1 drop=true sync=false"
             )
             
             self.internal_receiver_pipeline = Gst.parse_launch(pipeline_str)
@@ -304,13 +293,10 @@ class VideoStreamer:
         try:
             # Create pipeline in null state
             pipeline_str = (
-                f"udpsrc port={EXTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\" "
-                f"buffer-size=524288 ! "
-                f"rtpjitterbuffer latency=100 drop-on-latency=true ! "  # Handle network jitter
-                f"rtph264depay ! h264parse ! "
-                f"v4l2h264dec ! "  # Hardware decoding
+                f"udpsrc port={EXTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H265,payload=96\" ! "
+                f"rtph265depay ! h265parse ! avdec_h265 ! "
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=sink max-buffers=2 drop=true sync=false"
+                f"appsink name=sink max-buffers=1 drop=true sync=false"
             )
             
             self.external_receiver_pipeline = Gst.parse_launch(pipeline_str)
