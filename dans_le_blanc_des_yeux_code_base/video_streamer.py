@@ -254,7 +254,7 @@ class VideoStreamer:
             pipeline_str = (
                 f"appsrc name=src format=time is-live=true do-timestamp=true ! "
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-                f"avenc_h264_omx bitrate={BITRATE} ! "  # OpenMAX IL H.264 encoder available on Pi5
+                f"avenc_h264_omx bitrate={BITRATE} profile=baseline speed-preset=ultrafast ! "  # OpenMAX IL H.264 encoder available on Pi5
                 f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
                 f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=212992 max-lateness=0"
             )
@@ -294,7 +294,7 @@ class VideoStreamer:
             pipeline_str = (
                 f"appsrc name=src format=time is-live=true do-timestamp=true ! "
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-                f"avenc_h264_omx bitrate={BITRATE} ! "  # OpenMAX IL H.264 encoder available on Pi5
+                f"avenc_h264_omx bitrate={BITRATE} profile=baseline speed-preset=ultrafast ! "  # OpenMAX IL H.264 encoder available on Pi5
                 f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
                 f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=212992 max-lateness=0"
             )
