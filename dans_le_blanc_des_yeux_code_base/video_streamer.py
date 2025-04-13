@@ -188,9 +188,9 @@ class VideoStreamer:
             pipeline_str = (
                 f"appsrc name=src format=time is-live=true do-timestamp=true ! "
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-                f"x265enc bitrate=2000 tune=zerolatency speed-preset=superfast ! "
-                f"rtph265pay config-interval=1 ! "
-                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false"
+                f"v4l2h264enc extra-controls=\"controls,h264_profile=1,video_bitrate=8000000\" ! "  # Hardware-accelerated H.264 encoder for Pi
+                f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
+                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0 max-buffers=1"
             )
             
             self.internal_sender_pipeline = Gst.parse_launch(pipeline_str)
@@ -228,9 +228,9 @@ class VideoStreamer:
             pipeline_str = (
                 f"appsrc name=src format=time is-live=true do-timestamp=true ! "
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-                f"x265enc bitrate=2000 tune=zerolatency speed-preset=superfast ! "
-                f"rtph265pay config-interval=1 ! "
-                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false"
+                f"v4l2h264enc extra-controls=\"controls,h264_profile=1,video_bitrate=8000000\" ! "  # Hardware-accelerated H.264 encoder for Pi
+                f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
+                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0 max-buffers=1"
             )
             
             self.external_sender_pipeline = Gst.parse_launch(pipeline_str)
@@ -262,8 +262,9 @@ class VideoStreamer:
         try:
             # Create pipeline in null state
             pipeline_str = (
-                f"udpsrc port={INTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H265,payload=96\" ! "
-                f"rtph265depay ! h265parse ! avdec_h265 ! "
+                f"udpsrc port={INTERNAL_STREAM_PORT} buffer-size=2097152 caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\" ! "
+                f"rtpjitterbuffer latency=50 ! rtph264depay ! h264parse ! "
+                f"v4l2h264dec ! "  # Hardware-accelerated H.264 decoder for Pi
                 f"videoconvert ! video/x-raw,format=BGR ! "
                 f"appsink name=sink max-buffers=1 drop=true sync=false"
             )
@@ -293,8 +294,9 @@ class VideoStreamer:
         try:
             # Create pipeline in null state
             pipeline_str = (
-                f"udpsrc port={EXTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H265,payload=96\" ! "
-                f"rtph265depay ! h265parse ! avdec_h265 ! "
+                f"udpsrc port={EXTERNAL_STREAM_PORT} buffer-size=2097152 caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\" ! "
+                f"rtpjitterbuffer latency=50 ! rtph264depay ! h264parse ! "
+                f"v4l2h264dec ! "  # Hardware-accelerated H.264 decoder for Pi
                 f"videoconvert ! video/x-raw,format=BGR ! "
                 f"appsink name=sink max-buffers=1 drop=true sync=false"
             )
