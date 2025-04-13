@@ -184,13 +184,13 @@ class VideoStreamer:
             return False
         
         try:
-            # Create pipeline in paused state
+            # Create pipeline in paused state - Using H.264 with omxh264enc for hardware acceleration
             pipeline_str = (
                 f"appsrc name=src format=time is-live=true do-timestamp=true ! "
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-                f"v4l2h264enc extra-controls=\"controls,h264_profile=1,video_bitrate=8000000\" ! "  # Hardware-accelerated H.264 encoder for Pi
-                f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
-                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0 max-buffers=1"
+                f"omxh264enc insert-sps-pps=true bitrate=4000000 control-rate=variable ! "
+                f"rtph264pay config-interval=1 ! "
+                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false"
             )
             
             self.internal_sender_pipeline = Gst.parse_launch(pipeline_str)
@@ -216,7 +216,7 @@ class VideoStreamer:
         except Exception as e:
             print(f"Failed to create internal sender pipeline: {e}")
             return False
-    
+
     def _create_external_sender_pipeline(self) -> bool:
         """Create GStreamer pipeline for sending external camera frames."""
         if not self.camera_manager.is_external_camera_available():
@@ -224,13 +224,13 @@ class VideoStreamer:
             return False
         
         try:
-            # Create pipeline in paused state
+            # Create pipeline in paused state - Using H.264 with omxh264enc for hardware acceleration
             pipeline_str = (
                 f"appsrc name=src format=time is-live=true do-timestamp=true ! "
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-                f"v4l2h264enc extra-controls=\"controls,h264_profile=1,video_bitrate=8000000\" ! "  # Hardware-accelerated H.264 encoder for Pi
-                f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
-                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0 max-buffers=1"
+                f"omxh264enc insert-sps-pps=true bitrate=4000000 control-rate=variable ! "
+                f"rtph264pay config-interval=1 ! "
+                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false"
             )
             
             self.external_sender_pipeline = Gst.parse_launch(pipeline_str)
@@ -256,17 +256,16 @@ class VideoStreamer:
         except Exception as e:
             print(f"Failed to create external sender pipeline: {e}")
             return False
-    
+
     def _create_internal_receiver_pipeline(self) -> bool:
         """Create GStreamer pipeline for receiving internal camera frames."""
         try:
-            # Create pipeline in null state
+            # Create pipeline in null state - Updated for H.264 with optimized settings
             pipeline_str = (
-                f"udpsrc port={INTERNAL_STREAM_PORT} buffer-size=2097152 caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\" ! "
-                f"rtpjitterbuffer latency=50 ! rtph264depay ! h264parse ! "
-                f"v4l2h264dec ! "  # Hardware-accelerated H.264 decoder for Pi
+                f"udpsrc port={INTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\" ! "
+                f"rtph264depay ! h264parse ! avdec_h264 max-threads=4 ! "
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=sink max-buffers=1 drop=true sync=false"
+                f"appsink name=sink max-buffers=2 drop=true sync=false"
             )
             
             self.internal_receiver_pipeline = Gst.parse_launch(pipeline_str)
@@ -288,17 +287,16 @@ class VideoStreamer:
         except Exception as e:
             print(f"Failed to create internal receiver pipeline: {e}")
             return False
-    
+
     def _create_external_receiver_pipeline(self) -> bool:
         """Create GStreamer pipeline for receiving external camera frames."""
         try:
-            # Create pipeline in null state
+            # Create pipeline in null state - Updated for H.264 with optimized settings
             pipeline_str = (
-                f"udpsrc port={EXTERNAL_STREAM_PORT} buffer-size=2097152 caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\" ! "
-                f"rtpjitterbuffer latency=50 ! rtph264depay ! h264parse ! "
-                f"v4l2h264dec ! "  # Hardware-accelerated H.264 decoder for Pi
+                f"udpsrc port={EXTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\" ! "
+                f"rtph264depay ! h264parse ! avdec_h264 max-threads=4 ! "
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=sink max-buffers=1 drop=true sync=false"
+                f"appsink name=sink max-buffers=2 drop=true sync=false"
             )
             
             self.external_receiver_pipeline = Gst.parse_launch(pipeline_str)
