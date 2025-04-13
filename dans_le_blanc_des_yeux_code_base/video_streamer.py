@@ -53,8 +53,8 @@ class VideoStreamer:
         self.lock = threading.Lock()
         
         # Frame dimensions and quality
-        self.frame_width = 640
-        self.frame_height = 480
+        self.frame_width = 1024
+        self.frame_height = 600
         
         # GStreamer pipelines
         self.internal_sender_pipeline = None
