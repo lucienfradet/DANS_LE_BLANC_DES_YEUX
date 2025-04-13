@@ -66,9 +66,19 @@ class VideoStreamer:
         self.internal_appsrc = None
         self.external_appsrc = None
         
-        # GStreamer main loop
-        self.main_loop = None
-        self.main_loop_thread = None
+        # GStreamer appsinks for receiving frames
+        self.internal_appsink = None
+        self.external_appsink = None
+        
+        # Bus polling threads
+        self.internal_sender_poll_thread = None
+        self.external_sender_poll_thread = None
+        self.internal_receiver_poll_thread = None
+        self.external_receiver_poll_thread = None
+        
+        # Appsink polling threads
+        self.internal_receiver_pull_thread = None
+        self.external_receiver_pull_thread = None
         
         # Callbacks
         self.on_internal_frame_received = None
@@ -83,9 +93,6 @@ class VideoStreamer:
         """Start the video streaming system by creating GStreamer pipelines."""
         print("Starting video streamer...")
         self.running = True
-        
-        # Create GStreamer main loop
-        self._start_gstreamer_main_loop()
         
         # Create all pipelines (in paused state)
         success = (
@@ -116,13 +123,10 @@ class VideoStreamer:
         # Stop all pipelines
         self._stop_all_pipelines()
         
-        # Stop GStreamer main loop
-        if self.main_loop and self.main_loop.is_running():
-            self.main_loop.quit()
-        
         # Wait for threads to finish
-        if self.main_loop_thread:
-            self.main_loop_thread.join(timeout=2.0)
+        for thread in self.threads:
+            if thread and thread.is_alive():
+                thread.join(timeout=2.0)
         
         print("Video streamer stopped")
     
@@ -143,13 +147,6 @@ class VideoStreamer:
     def register_external_frame_callback(self, callback: Callable[[np.ndarray], None]) -> None:
         """Register a callback for when a new external frame is received."""
         self.on_external_frame_received = callback
-    
-    def _start_gstreamer_main_loop(self) -> None:
-        """Start the GStreamer main loop in a separate thread."""
-        self.main_loop = GLib.MainLoop()
-        self.main_loop_thread = threading.Thread(target=self.main_loop.run)
-        self.main_loop_thread.daemon = True
-        self.main_loop_thread.start()
     
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
@@ -204,10 +201,12 @@ class VideoStreamer:
                 f"video/x-raw,format=BGR,width={self.frame_width},height={self.frame_height},framerate=30/1"
             ))
             
-            # Add bus watch
-            bus = self.internal_sender_pipeline.get_bus()
-            bus.add_signal_watch()
-            bus.connect("message", self._on_internal_sender_message)
+            # Start bus polling thread for this pipeline
+            self._start_bus_polling_thread(
+                self.internal_sender_pipeline, 
+                "internal_sender", 
+                lambda: self.internal_sender_poll_thread
+            )
             
             # Set pipeline to paused state
             self.internal_sender_pipeline.set_state(Gst.State.PAUSED)
@@ -242,10 +241,12 @@ class VideoStreamer:
                 f"video/x-raw,format=BGR,width={self.frame_width},height={self.frame_height},framerate=30/1"
             ))
             
-            # Add bus watch
-            bus = self.external_sender_pipeline.get_bus()
-            bus.add_signal_watch()
-            bus.connect("message", self._on_external_sender_message)
+            # Start bus polling thread for this pipeline
+            self._start_bus_polling_thread(
+                self.external_sender_pipeline, 
+                "external_sender", 
+                lambda: self.external_sender_poll_thread
+            )
             
             # Set pipeline to paused state
             self.external_sender_pipeline.set_state(Gst.State.PAUSED)
@@ -264,19 +265,21 @@ class VideoStreamer:
                 f"udpsrc port={INTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H265,payload=96\" ! "
                 f"rtph265depay ! h265parse ! avdec_h265 ! "
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
+                f"appsink name=sink max-buffers=1 drop=true sync=false"
             )
             
             self.internal_receiver_pipeline = Gst.parse_launch(pipeline_str)
             
-            # Get appsink element and connect to callback
-            appsink = self.internal_receiver_pipeline.get_by_name("sink")
-            appsink.connect("new-sample", self._on_internal_frame_received_gst)
+            # Get appsink element
+            self.internal_appsink = self.internal_receiver_pipeline.get_by_name("sink")
+            self.internal_appsink.set_property("emit-signals", False)  # We'll manually pull samples
             
-            # Add bus watch
-            bus = self.internal_receiver_pipeline.get_bus()
-            bus.add_signal_watch()
-            bus.connect("message", self._on_internal_receiver_message)
+            # Start bus polling thread for this pipeline
+            self._start_bus_polling_thread(
+                self.internal_receiver_pipeline, 
+                "internal_receiver", 
+                lambda: self.internal_receiver_poll_thread
+            )
             
             print(f"Created internal receiver pipeline")
             return True
@@ -293,19 +296,21 @@ class VideoStreamer:
                 f"udpsrc port={EXTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H265,payload=96\" ! "
                 f"rtph265depay ! h265parse ! avdec_h265 ! "
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
+                f"appsink name=sink max-buffers=1 drop=true sync=false"
             )
             
             self.external_receiver_pipeline = Gst.parse_launch(pipeline_str)
             
-            # Get appsink element and connect to callback
-            appsink = self.external_receiver_pipeline.get_by_name("sink")
-            appsink.connect("new-sample", self._on_external_frame_received_gst)
+            # Get appsink element
+            self.external_appsink = self.external_receiver_pipeline.get_by_name("sink")
+            self.external_appsink.set_property("emit-signals", False)  # We'll manually pull samples
             
-            # Add bus watch
-            bus = self.external_receiver_pipeline.get_bus()
-            bus.add_signal_watch()
-            bus.connect("message", self._on_external_receiver_message)
+            # Start bus polling thread for this pipeline
+            self._start_bus_polling_thread(
+                self.external_receiver_pipeline, 
+                "external_receiver", 
+                lambda: self.external_receiver_poll_thread
+            )
             
             print(f"Created external receiver pipeline")
             return True
@@ -314,15 +319,139 @@ class VideoStreamer:
             print(f"Failed to create external receiver pipeline: {e}")
             return False
     
+    def _start_bus_polling_thread(self, pipeline, name, thread_getter):
+        """Start a thread that polls for messages on a pipeline's bus."""
+        def poll_bus():
+            bus = pipeline.get_bus()
+            while self.running:
+                message = bus.timed_pop_filtered(
+                    100 * Gst.MSECOND,  # 100ms timeout
+                    Gst.MessageType.ERROR | Gst.MessageType.WARNING | Gst.MessageType.EOS
+                )
+                if message:
+                    self._handle_pipeline_message(message, name)
+        
+        thread = threading.Thread(target=poll_bus, name=f"{name}_bus_poll")
+        thread.daemon = True
+        thread.start()
+        
+        if name == "internal_sender":
+            self.internal_sender_poll_thread = thread
+        elif name == "external_sender":
+            self.external_sender_poll_thread = thread
+        elif name == "internal_receiver":
+            self.internal_receiver_poll_thread = thread
+        elif name == "external_receiver":
+            self.external_receiver_poll_thread = thread
+        
+        self.threads.append(thread)
+    
     def _start_receiver_pipelines(self) -> None:
-        """Start the receiver pipelines."""
+        """Start the receiver pipelines and their sample pulling threads."""
+        # Start internal receiver pipeline and pulling thread
         if self.internal_receiver_pipeline:
             self.internal_receiver_pipeline.set_state(Gst.State.PLAYING)
             print("Started internal receiver pipeline")
+            
+            # Start thread to pull samples
+            self.internal_receiver_pull_thread = threading.Thread(
+                target=self._pull_internal_receiver_samples,
+                name="internal_receiver_pull"
+            )
+            self.internal_receiver_pull_thread.daemon = True
+            self.internal_receiver_pull_thread.start()
+            self.threads.append(self.internal_receiver_pull_thread)
         
+        # Start external receiver pipeline and pulling thread
         if self.external_receiver_pipeline:
             self.external_receiver_pipeline.set_state(Gst.State.PLAYING)
             print("Started external receiver pipeline")
+            
+            # Start thread to pull samples
+            self.external_receiver_pull_thread = threading.Thread(
+                target=self._pull_external_receiver_samples,
+                name="external_receiver_pull"
+            )
+            self.external_receiver_pull_thread.daemon = True
+            self.external_receiver_pull_thread.start()
+            self.threads.append(self.external_receiver_pull_thread)
+    
+    def _pull_internal_receiver_samples(self):
+        """Continuously pull samples from the internal receiver's appsink."""
+        while self.running:
+            if self.internal_appsink:
+                sample = self.internal_appsink.try_pull_sample(100 * Gst.MSECOND)  # 100ms timeout
+                if sample:
+                    self._process_internal_sample(sample)
+            time.sleep(0.01)  # Small sleep to prevent CPU hogging
+    
+    def _pull_external_receiver_samples(self):
+        """Continuously pull samples from the external receiver's appsink."""
+        while self.running:
+            if self.external_appsink:
+                sample = self.external_appsink.try_pull_sample(100 * Gst.MSECOND)  # 100ms timeout
+                if sample:
+                    self._process_external_sample(sample)
+            time.sleep(0.01)  # Small sleep to prevent CPU hogging
+    
+    def _process_internal_sample(self, sample):
+        """Process a sample from the internal receiver pipeline."""
+        frame = self._sample_to_numpy(sample)
+        if frame is not None:
+            with self.lock:
+                self.received_internal_frame = frame
+            
+            # Call callback if registered
+            if self.on_internal_frame_received:
+                self.on_internal_frame_received(frame)
+    
+    def _process_external_sample(self, sample):
+        """Process a sample from the external receiver pipeline."""
+        frame = self._sample_to_numpy(sample)
+        if frame is not None:
+            with self.lock:
+                self.received_external_frame = frame
+            
+            # Call callback if registered
+            if self.on_external_frame_received:
+                self.on_external_frame_received(frame)
+    
+    def _sample_to_numpy(self, sample):
+        """Convert a GStreamer sample to a numpy array."""
+        try:
+            buffer = sample.get_buffer()
+            caps = sample.get_caps()
+            
+            # Get buffer info
+            success, map_info = buffer.map(Gst.MapFlags.READ)
+            if not success:
+                return None
+            
+            # Get caps structure
+            structure = caps.get_structure(0)
+            
+            # Get dimensions
+            width = structure.get_value("width")
+            height = structure.get_value("height")
+            
+            # Create numpy array from buffer
+            frame = np.ndarray(
+                shape=(height, width, 3),
+                dtype=np.uint8,
+                buffer=map_info.data
+            )
+            
+            # Make a copy of the data
+            result = frame.copy()
+            
+            # Unmap the buffer
+            buffer.unmap(map_info)
+            
+            return result
+        
+        except Exception as e:
+            print(f"Error converting sample to numpy: {e}")
+            return None
     
     def _start_internal_stream(self) -> bool:
         """Start streaming the internal camera to the remote device."""
@@ -419,9 +548,6 @@ class VideoStreamer:
                          self.internal_receiver_pipeline, self.external_receiver_pipeline]:
             if pipeline:
                 pipeline.set_state(Gst.State.NULL)
-                # Remove bus watch
-                bus = pipeline.get_bus()
-                bus.remove_signal_watch()
         
         print("All pipelines stopped")
     
@@ -478,104 +604,11 @@ class VideoStreamer:
             # Push buffer to appsrc
             appsrc.emit("push-buffer", gst_buffer)
     
-    def _on_internal_frame_received_gst(self, appsink: GstApp.AppSink) -> Gst.FlowReturn:
-        """Handle new frame from the internal receiver pipeline."""
-        sample = appsink.pull_sample()
-        if not sample:
-            return Gst.FlowReturn.ERROR
-        
-        # Get frame from sample
-        buffer = sample.get_buffer()
-        caps = sample.get_caps()
-        
-        # Get buffer data
-        frame = self._buffer_to_numpy(buffer, caps)
-        
-        if frame is not None:
-            with self.lock:
-                self.received_internal_frame = frame
-            
-            # Call callback if registered
-            if self.on_internal_frame_received:
-                self.on_internal_frame_received(frame)
-        
-        return Gst.FlowReturn.OK
-    
-    def _on_external_frame_received_gst(self, appsink: GstApp.AppSink) -> Gst.FlowReturn:
-        """Handle new frame from the external receiver pipeline."""
-        sample = appsink.pull_sample()
-        if not sample:
-            return Gst.FlowReturn.ERROR
-        
-        # Get frame from sample
-        buffer = sample.get_buffer()
-        caps = sample.get_caps()
-        
-        # Get buffer data
-        frame = self._buffer_to_numpy(buffer, caps)
-        
-        if frame is not None:
-            with self.lock:
-                self.received_external_frame = frame
-            
-            # Call callback if registered
-            if self.on_external_frame_received:
-                self.on_external_frame_received(frame)
-        
-        return Gst.FlowReturn.OK
-    
-    def _buffer_to_numpy(self, buffer: Gst.Buffer, caps: Gst.Caps) -> Optional[np.ndarray]:
-        """Convert GStreamer buffer to numpy array."""
-        try:
-            # Get buffer info
-            success, map_info = buffer.map(Gst.MapFlags.READ)
-            if not success:
-                return None
-            
-            # Get caps structure
-            structure = caps.get_structure(0)
-            
-            # Get dimensions
-            width = structure.get_value("width")
-            height = structure.get_value("height")
-            
-            # Create numpy array from buffer
-            frame = np.ndarray(
-                shape=(height, width, 3),
-                dtype=np.uint8,
-                buffer=map_info.data
-            )
-            
-            # Make a copy of the data
-            result = frame.copy()
-            
-            # Unmap the buffer
-            buffer.unmap(map_info)
-            
-            return result
-        
-        except Exception as e:
-            print(f"Error converting buffer to numpy: {e}")
-            return None
-    
-    def _on_internal_sender_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
-        """Handle bus messages from the internal sender pipeline."""
-        self._handle_pipeline_message(message, "internal sender")
-    
-    def _on_external_sender_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
-        """Handle bus messages from the external sender pipeline."""
-        self._handle_pipeline_message(message, "external sender")
-    
-    def _on_internal_receiver_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
-        """Handle bus messages from the internal receiver pipeline."""
-        self._handle_pipeline_message(message, "internal receiver")
-    
-    def _on_external_receiver_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
-        """Handle bus messages from the external receiver pipeline."""
-        self._handle_pipeline_message(message, "external receiver")
-    
     def _handle_pipeline_message(self, message: Gst.Message, pipeline_name: str) -> None:
         """Handle GStreamer pipeline messages."""
+        if not message:
+            return
+            
         t = message.type
         
         if t == Gst.MessageType.ERROR:
