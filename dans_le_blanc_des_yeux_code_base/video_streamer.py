@@ -1,6 +1,6 @@
 """
 Video streaming module for the Dans le Blanc des Yeux installation.
-Handles sending and receiving video streams between devices using custom UDP streaming.
+Handles sending and receiving video streams between devices using H.265 encoding over GStreamer.
 
 Streaming Logic:
 1. When remote device has pressure=true and local doesn't: Send external PiCamera feed
@@ -12,11 +12,15 @@ Streaming Logic:
 import os
 import time
 import threading
-import socket
-import struct
 import numpy as np
 import cv2
+import gi
 from typing import Dict, Optional, Tuple, List, Callable
+
+# Import GStreamer
+gi.require_version('Gst', '1.0')
+gi.require_version('GstApp', '1.0')
+from gi.repository import Gst, GstApp, GLib, GObject
 
 from system_state import system_state
 from camera_manager import CameraManager
@@ -25,8 +29,11 @@ from camera_manager import CameraManager
 INTERNAL_STREAM_PORT = 5000  # Port for internal camera stream
 EXTERNAL_STREAM_PORT = 5001  # Port for external camera stream
 
+# Initialize GStreamer
+Gst.init(None)
+
 class VideoStreamer:
-    """Handles video streaming between devices."""
+    """Handles video streaming between devices using H.265 encoding and GStreamer."""
     
     def __init__(self, camera_manager: CameraManager, remote_ip: str):
         self.camera_manager = camera_manager
@@ -48,10 +55,20 @@ class VideoStreamer:
         # Frame dimensions and quality
         self.frame_width = 640
         self.frame_height = 480
-        self.jpeg_quality = 30  # 0-100, higher is better quality
         
-        # Frame handling
-        self.buffer_size = 65536
+        # GStreamer pipelines
+        self.internal_sender_pipeline = None
+        self.external_sender_pipeline = None
+        self.internal_receiver_pipeline = None
+        self.external_receiver_pipeline = None
+        
+        # GStreamer elements for feeding frames
+        self.internal_appsrc = None
+        self.external_appsrc = None
+        
+        # GStreamer main loop
+        self.main_loop = None
+        self.main_loop_thread = None
         
         # Callbacks
         self.on_internal_frame_received = None
@@ -63,12 +80,27 @@ class VideoStreamer:
         print(f"Video streamer initialized with remote IP: {remote_ip}")
     
     def start(self) -> bool:
-        """Start the video streaming system."""
+        """Start the video streaming system by creating GStreamer pipelines."""
         print("Starting video streamer...")
         self.running = True
         
-        # Start receiver threads
-        self._start_receiver_threads()
+        # Create GStreamer main loop
+        self._start_gstreamer_main_loop()
+        
+        # Create all pipelines (in paused state)
+        success = (
+            self._create_internal_receiver_pipeline() and
+            self._create_external_receiver_pipeline() and
+            self._create_internal_sender_pipeline() and
+            self._create_external_sender_pipeline()
+        )
+        
+        if not success:
+            self.stop()
+            return False
+        
+        # Start receiver pipelines (always active)
+        self._start_receiver_pipelines()
         
         # Check initial state to see if we need to start streaming right away
         self._update_streaming_based_on_state()
@@ -81,12 +113,16 @@ class VideoStreamer:
         print("Stopping video streamer...")
         self.running = False
         
-        # Stop any active streaming
-        self._stop_all_streams()
+        # Stop all pipelines
+        self._stop_all_pipelines()
+        
+        # Stop GStreamer main loop
+        if self.main_loop and self.main_loop.is_running():
+            self.main_loop.quit()
         
         # Wait for threads to finish
-        for thread in self.threads:
-            thread.join(timeout=1.0)
+        if self.main_loop_thread:
+            self.main_loop_thread.join(timeout=2.0)
         
         print("Video streamer stopped")
     
@@ -108,6 +144,13 @@ class VideoStreamer:
         """Register a callback for when a new external frame is received."""
         self.on_external_frame_received = callback
     
+    def _start_gstreamer_main_loop(self) -> None:
+        """Start the GStreamer main loop in a separate thread."""
+        self.main_loop = GLib.MainLoop()
+        self.main_loop_thread = threading.Thread(target=self.main_loop.run)
+        self.main_loop_thread.daemon = True
+        self.main_loop_thread.start()
+    
     def _on_state_change(self, changed_state: str) -> None:
         """Handle system state changes."""
         if changed_state in ["local", "remote"]:
@@ -120,7 +163,7 @@ class VideoStreamer:
         
         # Only proceed if remote is connected
         if not remote_state.get("connected", False):
-            self._stop_all_streams()
+            self._pause_all_sender_pipelines()
             return
         
         # Case 1: Both have pressure - stream internal cameras
@@ -135,21 +178,151 @@ class VideoStreamer:
         
         # Case 3: No streaming needed (local has pressure but remote doesn't, or neither has pressure)
         else:
-            self._stop_all_streams()
+            self._pause_all_sender_pipelines()
     
-    def _start_receiver_threads(self) -> None:
-        """Start threads to receive video streams."""
-        # Start internal camera receiver thread
-        internal_receiver = threading.Thread(target=self._internal_receiver_loop)
-        internal_receiver.daemon = True
-        internal_receiver.start()
-        self.threads.append(internal_receiver)
+    def _create_internal_sender_pipeline(self) -> bool:
+        """Create GStreamer pipeline for sending internal camera frames."""
+        if not self.camera_manager.is_internal_camera_available():
+            print("Internal camera not available for creating pipeline")
+            return False
         
-        # Start external camera receiver thread
-        external_receiver = threading.Thread(target=self._external_receiver_loop)
-        external_receiver.daemon = True
-        external_receiver.start()
-        self.threads.append(external_receiver)
+        try:
+            # Create pipeline in paused state
+            pipeline_str = (
+                f"appsrc name=src format=time is-live=true do-timestamp=true ! "
+                f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
+                f"x265enc bitrate=2000 tune=zerolatency speed-preset=superfast ! "
+                f"rtph265pay config-interval=1 ! "
+                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false"
+            )
+            
+            self.internal_sender_pipeline = Gst.parse_launch(pipeline_str)
+            
+            # Get appsrc element
+            self.internal_appsrc = self.internal_sender_pipeline.get_by_name("src")
+            self.internal_appsrc.set_property("caps", Gst.Caps.from_string(
+                f"video/x-raw,format=BGR,width={self.frame_width},height={self.frame_height},framerate=30/1"
+            ))
+            
+            # Add bus watch
+            bus = self.internal_sender_pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", self._on_internal_sender_message)
+            
+            # Set pipeline to paused state
+            self.internal_sender_pipeline.set_state(Gst.State.PAUSED)
+            print(f"Created internal sender pipeline (paused)")
+            return True
+        
+        except Exception as e:
+            print(f"Failed to create internal sender pipeline: {e}")
+            return False
+    
+    def _create_external_sender_pipeline(self) -> bool:
+        """Create GStreamer pipeline for sending external camera frames."""
+        if not self.camera_manager.is_external_camera_available():
+            print("External camera not available for creating pipeline")
+            return False
+        
+        try:
+            # Create pipeline in paused state
+            pipeline_str = (
+                f"appsrc name=src format=time is-live=true do-timestamp=true ! "
+                f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
+                f"x265enc bitrate=2000 tune=zerolatency speed-preset=superfast ! "
+                f"rtph265pay config-interval=1 ! "
+                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false"
+            )
+            
+            self.external_sender_pipeline = Gst.parse_launch(pipeline_str)
+            
+            # Get appsrc element
+            self.external_appsrc = self.external_sender_pipeline.get_by_name("src")
+            self.external_appsrc.set_property("caps", Gst.Caps.from_string(
+                f"video/x-raw,format=BGR,width={self.frame_width},height={self.frame_height},framerate=30/1"
+            ))
+            
+            # Add bus watch
+            bus = self.external_sender_pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", self._on_external_sender_message)
+            
+            # Set pipeline to paused state
+            self.external_sender_pipeline.set_state(Gst.State.PAUSED)
+            print(f"Created external sender pipeline (paused)")
+            return True
+        
+        except Exception as e:
+            print(f"Failed to create external sender pipeline: {e}")
+            return False
+    
+    def _create_internal_receiver_pipeline(self) -> bool:
+        """Create GStreamer pipeline for receiving internal camera frames."""
+        try:
+            # Create pipeline in null state
+            pipeline_str = (
+                f"udpsrc port={INTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H265,payload=96\" ! "
+                f"rtph265depay ! h265parse ! avdec_h265 ! "
+                f"videoconvert ! video/x-raw,format=BGR ! "
+                f"appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
+            )
+            
+            self.internal_receiver_pipeline = Gst.parse_launch(pipeline_str)
+            
+            # Get appsink element and connect to callback
+            appsink = self.internal_receiver_pipeline.get_by_name("sink")
+            appsink.connect("new-sample", self._on_internal_frame_received_gst)
+            
+            # Add bus watch
+            bus = self.internal_receiver_pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", self._on_internal_receiver_message)
+            
+            print(f"Created internal receiver pipeline")
+            return True
+        
+        except Exception as e:
+            print(f"Failed to create internal receiver pipeline: {e}")
+            return False
+    
+    def _create_external_receiver_pipeline(self) -> bool:
+        """Create GStreamer pipeline for receiving external camera frames."""
+        try:
+            # Create pipeline in null state
+            pipeline_str = (
+                f"udpsrc port={EXTERNAL_STREAM_PORT} caps=\"application/x-rtp,media=video,encoding-name=H265,payload=96\" ! "
+                f"rtph265depay ! h265parse ! avdec_h265 ! "
+                f"videoconvert ! video/x-raw,format=BGR ! "
+                f"appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false"
+            )
+            
+            self.external_receiver_pipeline = Gst.parse_launch(pipeline_str)
+            
+            # Get appsink element and connect to callback
+            appsink = self.external_receiver_pipeline.get_by_name("sink")
+            appsink.connect("new-sample", self._on_external_frame_received_gst)
+            
+            # Add bus watch
+            bus = self.external_receiver_pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", self._on_external_receiver_message)
+            
+            print(f"Created external receiver pipeline")
+            return True
+        
+        except Exception as e:
+            print(f"Failed to create external receiver pipeline: {e}")
+            return False
+    
+    def _start_receiver_pipelines(self) -> None:
+        """Start the receiver pipelines."""
+        if self.internal_receiver_pipeline:
+            self.internal_receiver_pipeline.set_state(Gst.State.PLAYING)
+            print("Started internal receiver pipeline")
+        
+        if self.external_receiver_pipeline:
+            self.external_receiver_pipeline.set_state(Gst.State.PLAYING)
+            print("Started external receiver pipeline")
     
     def _start_internal_stream(self) -> bool:
         """Start streaming the internal camera to the remote device."""
@@ -161,17 +334,24 @@ class VideoStreamer:
             return False
         
         try:
-            # Start sender thread
-            sender_thread = threading.Thread(target=self._internal_sender_loop)
-            sender_thread.daemon = True
-            sender_thread.start()
-            self.threads.append(sender_thread)
+            # Start the feed thread if not already running
+            if not self.internal_sending:
+                self.internal_sending = True
+                thread = threading.Thread(target=self._internal_feed_loop)
+                thread.daemon = True
+                thread.start()
+                self.threads.append(thread)
             
-            self.internal_sending = True
-            print(f"Started internal camera stream to {self.remote_ip}:{INTERNAL_STREAM_PORT}")
-            return True
+            # Set pipeline to playing state
+            if self.internal_sender_pipeline:
+                self.internal_sender_pipeline.set_state(Gst.State.PLAYING)
+                print(f"Started internal camera stream to {self.remote_ip}:{INTERNAL_STREAM_PORT}")
+                return True
+            return False
+        
         except Exception as e:
             print(f"Failed to start internal camera stream: {e}")
+            self.internal_sending = False
             return False
     
     def _start_external_stream(self) -> bool:
@@ -184,206 +364,230 @@ class VideoStreamer:
             return False
         
         try:
-            # Start sender thread
-            sender_thread = threading.Thread(target=self._external_sender_loop)
-            sender_thread.daemon = True
-            sender_thread.start()
-            self.threads.append(sender_thread)
+            # Start the feed thread if not already running
+            if not self.external_sending:
+                self.external_sending = True
+                thread = threading.Thread(target=self._external_feed_loop)
+                thread.daemon = True
+                thread.start()
+                self.threads.append(thread)
             
-            self.external_sending = True
-            print(f"Started external camera stream to {self.remote_ip}:{EXTERNAL_STREAM_PORT}")
-            return True
+            # Set pipeline to playing state
+            if self.external_sender_pipeline:
+                self.external_sender_pipeline.set_state(Gst.State.PLAYING)
+                print(f"Started external camera stream to {self.remote_ip}:{EXTERNAL_STREAM_PORT}")
+                return True
+            return False
+        
         except Exception as e:
             print(f"Failed to start external camera stream: {e}")
+            self.external_sending = False
             return False
     
     def _stop_internal_stream(self) -> None:
         """Stop streaming the internal camera."""
         if self.internal_sending:
             self.internal_sending = False
+            
+            if self.internal_sender_pipeline:
+                self.internal_sender_pipeline.set_state(Gst.State.PAUSED)
+            
             print("Stopped internal camera stream")
     
     def _stop_external_stream(self) -> None:
         """Stop streaming the external camera."""
         if self.external_sending:
             self.external_sending = False
+            
+            if self.external_sender_pipeline:
+                self.external_sender_pipeline.set_state(Gst.State.PAUSED)
+            
             print("Stopped external camera stream")
     
-    def _stop_all_streams(self) -> None:
-        """Stop all active streams."""
+    def _pause_all_sender_pipelines(self) -> None:
+        """Pause all sender pipelines."""
         self._stop_internal_stream()
         self._stop_external_stream()
-        print("All streams stopped")
     
-    def _create_udp_socket(self, port: int) -> socket.socket:
-        """Create a UDP socket for receiving video stream."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", port))
-        sock.settimeout(0.5)  # Set a timeout for responsive shutdown
-        return sock
+    def _stop_all_pipelines(self) -> None:
+        """Stop all GStreamer pipelines and clean up."""
+        # Stop sender pipelines
+        self._pause_all_sender_pipelines()
+        
+        # Stop and clean up all pipelines
+        for pipeline in [self.internal_sender_pipeline, self.external_sender_pipeline,
+                         self.internal_receiver_pipeline, self.external_receiver_pipeline]:
+            if pipeline:
+                pipeline.set_state(Gst.State.NULL)
+                # Remove bus watch
+                bus = pipeline.get_bus()
+                bus.remove_signal_watch()
+        
+        print("All pipelines stopped")
     
-    def _internal_receiver_loop(self) -> None:
-        """Receive internal camera stream from remote device."""
-        print(f"Starting internal camera receiver on port {INTERNAL_STREAM_PORT}")
-        sock = self._create_udp_socket(INTERNAL_STREAM_PORT)
-        
-        try:
-            while self.running:
-                try:
-                    # Receive packet with size prefix
-                    data, addr = sock.recvfrom(self.buffer_size)
-                    
-                    if len(data) < 4:  # Need at least 4 bytes for size
-                        continue
-                    
-                    # First 4 bytes contain the size of the jpeg data
-                    frame_size = struct.unpack(">I", data[:4])[0]
-                    
-                    # Rest of the packet contains the jpeg data
-                    jpeg_data = data[4:]
-                    
-                    # If we didn't get the full frame, we'll ignore this packet
-                    if len(jpeg_data) != frame_size:
-                        continue
-                    
-                    # Decode jpeg data to opencv format
-                    frame = cv2.imdecode(np.frombuffer(jpeg_data, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    
-                    if frame is not None:
-                        with self.lock:
-                            self.received_internal_frame = frame
-                        
-                        # Call callback if registered
-                        if self.on_internal_frame_received:
-                            self.on_internal_frame_received(frame)
-                except socket.timeout:
-                    # This is expected due to the socket timeout
-                    pass
-                except Exception as e:
-                    if self.running:
-                        print(f"Error in internal receiver: {e}")
-                        time.sleep(1.0)
-        finally:
-            sock.close()
-            print("Internal camera receiver stopped")
-    
-    def _external_receiver_loop(self) -> None:
-        """Receive external camera stream from remote device."""
-        print(f"Starting external camera receiver on port {EXTERNAL_STREAM_PORT}")
-        sock = self._create_udp_socket(EXTERNAL_STREAM_PORT)
-        
-        try:
-            while self.running:
-                try:
-                    # Receive packet with size prefix
-                    data, addr = sock.recvfrom(self.buffer_size)
-                    
-                    if len(data) < 4:  # Need at least 4 bytes for size
-                        continue
-                    
-                    # First 4 bytes contain the size of the jpeg data
-                    frame_size = struct.unpack(">I", data[:4])[0]
-                    
-                    # Rest of the packet contains the jpeg data
-                    jpeg_data = data[4:]
-                    
-                    # If we didn't get the full frame, we'll ignore this packet
-                    if len(jpeg_data) != frame_size:
-                        continue
-                    
-                    # Decode jpeg data to opencv format
-                    frame = cv2.imdecode(np.frombuffer(jpeg_data, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    
-                    if frame is not None:
-                        with self.lock:
-                            self.received_external_frame = frame
-                        
-                        # Call callback if registered
-                        if self.on_external_frame_received:
-                            self.on_external_frame_received(frame)
-                except socket.timeout:
-                    # This is expected due to the socket timeout
-                    pass
-                except Exception as e:
-                    if self.running:
-                        print(f"Error in external receiver: {e}")
-                        time.sleep(1.0)
-        finally:
-            sock.close()
-            print("External camera receiver stopped")
-    
-    def _internal_sender_loop(self) -> None:
-        """Send internal camera frames to remote device."""
-        print(f"Starting internal camera sender to {self.remote_ip}:{INTERNAL_STREAM_PORT}")
-        
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        
+    def _internal_feed_loop(self) -> None:
+        """Feed frames from the internal camera to the GStreamer pipeline."""
         try:
             while self.running and self.internal_sending:
-                try:
-                    # Get latest frame from internal camera
-                    frame = self.camera_manager.get_internal_frame()
-                    
-                    if frame is not None:
-                        # Encode frame as jpeg
-                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
-                        _, jpeg_data = cv2.imencode('.jpg', frame, encode_param)
-                        
-                        # Get size of jpeg data
-                        frame_size = len(jpeg_data)
-                        
-                        # Create packet with size prefix
-                        packet = struct.pack(">I", frame_size) + jpeg_data.tobytes()
-                        
-                        # Send packet
-                        sock.sendto(packet, (self.remote_ip, INTERNAL_STREAM_PORT))
-                    
-                    # Control frame rate
-                    time.sleep(0.033)  # ~30 fps
-                except Exception as e:
-                    if self.running and self.internal_sending:
-                        print(f"Error in internal sender: {e}")
-                        time.sleep(1.0)
+                # Get frame from camera manager
+                frame = self.camera_manager.get_internal_frame()
+                
+                if frame is not None and self.internal_appsrc:
+                    # Push frame to GStreamer pipeline
+                    self._push_frame_to_appsrc(frame, self.internal_appsrc)
+                
+                # Control frame rate
+                time.sleep(0.033)  # ~30 fps
+        except Exception as e:
+            if self.running and self.internal_sending:
+                print(f"Error in internal feed loop: {e}")
         finally:
-            sock.close()
-            print("Internal camera sender stopped")
+            print("Internal feed loop stopped")
     
-    def _external_sender_loop(self) -> None:
-        """Send external camera frames to remote device."""
-        print(f"Starting external camera sender to {self.remote_ip}:{EXTERNAL_STREAM_PORT}")
-        
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        
+    def _external_feed_loop(self) -> None:
+        """Feed frames from the external camera to the GStreamer pipeline."""
         try:
             while self.running and self.external_sending:
-                try:
-                    # Get latest frame from external camera
-                    frame = self.camera_manager.get_external_frame()
-                    
-                    if frame is not None:
-                        # Encode frame as jpeg
-                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
-                        _, jpeg_data = cv2.imencode('.jpg', frame, encode_param)
-                        
-                        # Get size of jpeg data
-                        frame_size = len(jpeg_data)
-                        
-                        # Create packet with size prefix
-                        packet = struct.pack(">I", frame_size) + jpeg_data.tobytes()
-                        
-                        # Send packet
-                        sock.sendto(packet, (self.remote_ip, EXTERNAL_STREAM_PORT))
-                    
-                    # Control frame rate
-                    time.sleep(0.033)  # ~30 fps
-                except Exception as e:
-                    if self.running and self.external_sending:
-                        print(f"Error in external sender: {e}")
-                        time.sleep(1.0)
+                # Get frame from camera manager
+                frame = self.camera_manager.get_external_frame()
+                
+                if frame is not None and self.external_appsrc:
+                    # Push frame to GStreamer pipeline
+                    self._push_frame_to_appsrc(frame, self.external_appsrc)
+                
+                # Control frame rate
+                time.sleep(0.033)  # ~30 fps
+        except Exception as e:
+            if self.running and self.external_sending:
+                print(f"Error in external feed loop: {e}")
         finally:
-            sock.close()
-            print("External camera sender stopped")
+            print("External feed loop stopped")
+    
+    def _push_frame_to_appsrc(self, frame: np.ndarray, appsrc: GstApp.AppSrc) -> None:
+        """Push a frame to a GStreamer AppSrc element."""
+        if frame.shape[0] != self.frame_height or frame.shape[1] != self.frame_width:
+            frame = cv2.resize(frame, (self.frame_width, self.frame_height))
+        
+        # Create GStreamer buffer from numpy array
+        buffer_size = frame.size
+        gst_buffer = Gst.Buffer.new_allocate(None, buffer_size, None)
+        
+        # Fill buffer with frame data
+        if gst_buffer:
+            gst_buffer.fill(0, frame.tobytes())
+            # Push buffer to appsrc
+            appsrc.emit("push-buffer", gst_buffer)
+    
+    def _on_internal_frame_received_gst(self, appsink: GstApp.AppSink) -> Gst.FlowReturn:
+        """Handle new frame from the internal receiver pipeline."""
+        sample = appsink.pull_sample()
+        if not sample:
+            return Gst.FlowReturn.ERROR
+        
+        # Get frame from sample
+        buffer = sample.get_buffer()
+        caps = sample.get_caps()
+        
+        # Get buffer data
+        frame = self._buffer_to_numpy(buffer, caps)
+        
+        if frame is not None:
+            with self.lock:
+                self.received_internal_frame = frame
+            
+            # Call callback if registered
+            if self.on_internal_frame_received:
+                self.on_internal_frame_received(frame)
+        
+        return Gst.FlowReturn.OK
+    
+    def _on_external_frame_received_gst(self, appsink: GstApp.AppSink) -> Gst.FlowReturn:
+        """Handle new frame from the external receiver pipeline."""
+        sample = appsink.pull_sample()
+        if not sample:
+            return Gst.FlowReturn.ERROR
+        
+        # Get frame from sample
+        buffer = sample.get_buffer()
+        caps = sample.get_caps()
+        
+        # Get buffer data
+        frame = self._buffer_to_numpy(buffer, caps)
+        
+        if frame is not None:
+            with self.lock:
+                self.received_external_frame = frame
+            
+            # Call callback if registered
+            if self.on_external_frame_received:
+                self.on_external_frame_received(frame)
+        
+        return Gst.FlowReturn.OK
+    
+    def _buffer_to_numpy(self, buffer: Gst.Buffer, caps: Gst.Caps) -> Optional[np.ndarray]:
+        """Convert GStreamer buffer to numpy array."""
+        try:
+            # Get buffer info
+            success, map_info = buffer.map(Gst.MapFlags.READ)
+            if not success:
+                return None
+            
+            # Get caps structure
+            structure = caps.get_structure(0)
+            
+            # Get dimensions
+            width = structure.get_value("width")
+            height = structure.get_value("height")
+            
+            # Create numpy array from buffer
+            frame = np.ndarray(
+                shape=(height, width, 3),
+                dtype=np.uint8,
+                buffer=map_info.data
+            )
+            
+            # Make a copy of the data
+            result = frame.copy()
+            
+            # Unmap the buffer
+            buffer.unmap(map_info)
+            
+            return result
+        
+        except Exception as e:
+            print(f"Error converting buffer to numpy: {e}")
+            return None
+    
+    def _on_internal_sender_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
+        """Handle bus messages from the internal sender pipeline."""
+        self._handle_pipeline_message(message, "internal sender")
+    
+    def _on_external_sender_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
+        """Handle bus messages from the external sender pipeline."""
+        self._handle_pipeline_message(message, "external sender")
+    
+    def _on_internal_receiver_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
+        """Handle bus messages from the internal receiver pipeline."""
+        self._handle_pipeline_message(message, "internal receiver")
+    
+    def _on_external_receiver_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
+        """Handle bus messages from the external receiver pipeline."""
+        self._handle_pipeline_message(message, "external receiver")
+    
+    def _handle_pipeline_message(self, message: Gst.Message, pipeline_name: str) -> None:
+        """Handle GStreamer pipeline messages."""
+        t = message.type
+        
+        if t == Gst.MessageType.ERROR:
+            err, debug = message.parse_error()
+            print(f"Error from {pipeline_name}: {err}, {debug}")
+        
+        elif t == Gst.MessageType.WARNING:
+            warn, debug = message.parse_warning()
+            print(f"Warning from {pipeline_name}: {warn}, {debug}")
+        
+        elif t == Gst.MessageType.EOS:
+            print(f"End of stream from {pipeline_name}")
 
 
 # Test function to run the video streamer standalone
