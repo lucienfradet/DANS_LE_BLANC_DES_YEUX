@@ -186,7 +186,7 @@ class VideoStreamer:
                 f"rtpjitterbuffer latency=50 ! rtph264depay ! h264parse ! "
                 f"avdec_h264 ! "  # Software H.264 decoder available on Pi5
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=sink max-buffers=1 drop=true sync=false"
+                f"appsink name=sink drop=true sync=false"
             )
             
             self.internal_receiver_pipeline = Gst.parse_launch(pipeline_str)
@@ -218,7 +218,7 @@ class VideoStreamer:
                 f"rtpjitterbuffer latency=50 ! rtph264depay ! h264parse ! "
                 f"avdec_h264 ! "  # Software H.264 decoder available on Pi5
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=sink max-buffers=1 drop=true sync=false"
+                f"appsink name=sink drop=true sync=false"
             )
             
             self.external_receiver_pipeline = Gst.parse_launch(pipeline_str)
@@ -255,7 +255,7 @@ class VideoStreamer:
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
                 f"avenc_h264_omx ! "  # OpenMAX IL H.264 encoder available on Pi5
                 f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
-                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0 max-buffers=1"
+                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0"
             )
             
             # Alternatively, if omxh264enc doesn't work, try x264enc (software encoder)
@@ -264,7 +264,7 @@ class VideoStreamer:
             #    f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
             #    f"x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 ! "
             #    f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
-            #    f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0 max-buffers=1"
+            #    f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0"
             # )
             
             self.internal_sender_pipeline = Gst.parse_launch(pipeline_str)
@@ -304,7 +304,7 @@ class VideoStreamer:
                 f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
                 f"avenc_h264_omx ! "  # OpenMAX IL H.264 encoder available on Pi5
                 f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
-                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0 max-buffers=1"
+                f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0"
             )
             
             # Alternatively, if omxh264enc doesn't work, try x264enc (software encoder)
@@ -313,7 +313,7 @@ class VideoStreamer:
             #    f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
             #    f"x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 ! "
             #    f"h264parse ! rtph264pay config-interval=1 mtu=1400 ! "
-            #    f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0 max-buffers=1"
+            #    f"udpsink host={self.remote_ip} port={EXTERNAL_STREAM_PORT} sync=false buffer-size=2097152 max-lateness=0"
             # )
             
             self.external_sender_pipeline = Gst.parse_launch(pipeline_str)
