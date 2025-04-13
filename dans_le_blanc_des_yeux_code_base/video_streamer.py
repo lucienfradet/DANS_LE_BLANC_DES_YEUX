@@ -24,6 +24,9 @@ import numpy as np
 import cv2
 from typing import Dict, Optional, Tuple, List, Callable, Any, Union
 
+from system_state import system_state
+from camera_manager import CameraManager
+
 # Global import of GStreamer
 try:
     import gi
