@@ -17,11 +17,6 @@ import cv2
 import numpy as np
 import configparser
 from typing import Dict, Optional, Tuple, List, Any
-import gi
-
-# Force Gtk for OpenCV display to avoid conflicts with GStreamer
-os.environ["OPENCV_VIDEOIO_PRIORITY_LIST"] = "GSTREAMER,FFMPEG"
-os.environ["OPENCV_GUI_BACKEND"] = "GTK"
 
 from system_state import system_state
 from camera_manager import CameraManager
@@ -81,8 +76,6 @@ class VideoDisplay:
         # Threading
         self.running = False
         self.thread = None
-        self.cv_window_created = False
-        self.window_lock = threading.Lock()
         
         # Window name
         self.window_name = "Dans le Blanc des Yeux"
@@ -229,54 +222,46 @@ class VideoDisplay:
         except Exception as e:
             print(f"Error adding default settings to config: {e}")
     
-    def _create_window(self):
-        """Create OpenCV window with proper error handling"""
-        try:
-            with self.window_lock:
-                if not self.cv_window_created:
-                    # First attempt to destroy any existing window with the same name
-                    try:
-                        cv2.destroyWindow(self.window_name)
-                    except Exception:
-                        pass  # Silently ignore if window doesn't exist
-                    
-                    # Create window with specific flags
-                    cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-                    
-                    # Set window size to match screen size
-                    cv2.resizeWindow(self.window_name, self.window_width, self.window_height)
-                    
-                    # Set window position to top-left corner
-                    cv2.moveWindow(self.window_name, 0, 0)
-                    
-                    # Give window a moment to be created before trying to use it
-                    black_frame = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
-                    cv2.imshow(self.window_name, black_frame)
-                    cv2.waitKey(100)  # Wait longer for window to initialize
-                    
-                    # Set fullscreen if enabled
-                    if self.display_options['fullscreen']:
-                        cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                        cv2.waitKey(100)  # Give time for fullscreen to apply
-                    
-                    # Try to set window to stay on top
-                    cv2.setWindowProperty(self.window_name, cv2.WND_PROP_TOPMOST, 1)
-                    
-                    self.cv_window_created = True
-                    print("Window created successfully")
-            
-            return True
-        except Exception as e:
-            print(f"Warning: Could not create window: {e}")
-            print("Display may not be available. Continuing anyway...")
-            return False
-    
     def start(self) -> bool:
         """Start the video display system."""
         print("Starting video display...")
         
-        # Create display window
-        display_available = self._create_window()
+        # Try to create window with proper fullscreen setup
+        try:
+            # First destroy any existing windows with the same name
+            try:
+                cv2.destroyWindow(self.window_name)
+            except():
+                pass  # Silently ignore if window doesn't exist
+            
+            # Create window with specific flags
+            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+            
+            # Set window size to match screen size
+            cv2.resizeWindow(self.window_name, self.window_width, self.window_height)
+            
+            # Set window position to top-left corner
+            cv2.moveWindow(self.window_name, 0, 0)
+            
+            # Make sure the window is visible with black frame
+            black_frame = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
+            cv2.imshow(self.window_name, black_frame)
+            cv2.waitKey(1)
+            
+            # Set fullscreen if enabled
+            if self.display_options['fullscreen']:
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            
+            # Try to set window to stay on top
+            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_TOPMOST, 1)
+            
+            # Wait a moment for window to settle
+            time.sleep(0.5)
+            
+            print("Window created successfully")
+        except Exception as e:
+            print(f"Warning: Could not create window: {e}")
+            print("Display may not be available. Continuing anyway...")
         
         self.running = True
         
@@ -296,19 +281,8 @@ class VideoDisplay:
         if self.thread:
             self.thread.join(timeout=1.0)
         
-        # Close OpenCV window safely
-        try:
-            with self.window_lock:
-                if self.cv_window_created:
-                    cv2.destroyWindow(self.window_name)
-                    cv2.waitKey(1)  # Process any pending events
-                    self.cv_window_created = False
-            
-            # Final call outside the lock to ensure all windows are closed
-            cv2.destroyAllWindows()
-            cv2.waitKey(1)  # Process any pending events
-        except Exception as e:
-            print(f"Warning: Error while closing window: {e}")
+        # Close all OpenCV windows
+        cv2.destroyAllWindows()
         
         print("Video display stopped")
     
@@ -461,39 +435,14 @@ class VideoDisplay:
         # Draw frame boundary box
         cv2.rectangle(frame, (x_offset, y_offset), (x_offset + w, y_offset + h), (0, 255, 0), 1)
     
-    def _safe_imshow(self, frame):
-        """Safely show a frame in the OpenCV window with error handling"""
-        try:
-            with self.window_lock:
-                if self.cv_window_created:
-                    cv2.imshow(self.window_name, frame)
-                    cv2.waitKey(1)
-                    
-                    # Check if window still exists and restore if needed
-                    try:
-                        # Only try to update fullscreen periodically to avoid unnecessary calls
-                        if self.display_options['fullscreen']:
-                            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                    except Exception as e:
-                        # If window operation fails, recreate the window
-                        print(f"Window operation failed, recreating window: {e}")
-                        self.cv_window_created = False
-                        self._create_window()
-            return True
-        except Exception as e:
-            print(f"Error showing frame: {e}")
-            # Try to recreate the window
-            self.cv_window_created = False
-            return self._create_window()
-    
     def _display_loop(self) -> None:
         """Main display loop."""
         print("Display loop started")
         
-        # Make sure window is created
-        display_available = self.cv_window_created
+        # Check if display is available
+        display_available = "DISPLAY" in os.environ
         if not display_available:
-            display_available = self._create_window()
+            print("Warning: DISPLAY environment variable not set. Running in headless mode.")
         
         try:
             last_render_time = 0
@@ -505,7 +454,12 @@ class VideoDisplay:
             
             # Force the window to be shown initially with a black frame
             if display_available:
-                self._safe_imshow(black_frame)
+                cv2.imshow(self.window_name, black_frame)
+                cv2.waitKey(1)
+                
+                # Make sure window is in fullscreen mode if enabled
+                if self.display_options['fullscreen']:
+                    cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             
             last_state_debug = None
             
@@ -555,15 +509,14 @@ class VideoDisplay:
                             cv2.putText(display_frame, source_desc, (10, 30),
                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                     
-                    # Show display if available, recreate window if needed
+                    # Show display if available
                     if display_available:
-                        display_available = self._safe_imshow(display_frame)
-                    else:
-                        # Try to recreate the window periodically
-                        if frame_counter % 30 == 0:
-                            display_available = self._create_window()
-                            if display_available:
-                                self._safe_imshow(display_frame)
+                        cv2.imshow(self.window_name, display_frame)
+                        cv2.waitKey(1)
+                        
+                        # Make sure fullscreen is maintained
+                        if self.display_options['fullscreen'] and frame_counter % 30 == 0:
+                            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
                     
                     last_render_time = frame_start_time
                     
@@ -585,17 +538,6 @@ class VideoDisplay:
             import traceback
             traceback.print_exc()
         finally:
-            # Make sure to cleanup windows properly
-            try:
-                with self.window_lock:
-                    if self.cv_window_created:
-                        cv2.destroyWindow(self.window_name)
-                        cv2.waitKey(1)
-                        self.cv_window_created = False
-                
+            if display_available:
                 cv2.destroyAllWindows()
-                cv2.waitKey(1)
-            except Exception as e:
-                print(f"Error closing windows: {e}")
-                
             print("Display loop stopped")
