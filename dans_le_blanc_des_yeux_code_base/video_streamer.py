@@ -185,17 +185,17 @@ class VideoStreamer:
         
         try:
             # Create pipeline in paused state
-        pipeline_str = (
-            f"appsrc name=src format=time is-live=true do-timestamp=true ! "
-            f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
-            f"v4l2h264enc extra-controls=\"controls,video_bitrate=2000000\" ! "  # Hardware encoding
-            f"video/x-h264,profile=high ! "
-            f"h264parse ! "
-            f"rtph264pay config-interval=1 aggregate-mode=zero-latency ! "
-            f"queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! "
-            f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} "
-            f"sync=false buffer-size=524288"
-        )
+            pipeline_str = (
+                f"appsrc name=src format=time is-live=true do-timestamp=true ! "
+                f"videoconvert ! video/x-raw,format=I420,width={self.frame_width},height={self.frame_height} ! "
+                f"v4l2h264enc extra-controls=\"controls,video_bitrate=2000000\" ! "  # Hardware encoding
+                f"video/x-h264,profile=high ! "
+                f"h264parse ! "
+                f"rtph264pay config-interval=1 aggregate-mode=zero-latency ! "
+                f"queue max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! "
+                f"udpsink host={self.remote_ip} port={INTERNAL_STREAM_PORT} "
+                f"sync=false buffer-size=524288"
+            )
             
             self.internal_sender_pipeline = Gst.parse_launch(pipeline_str)
             
