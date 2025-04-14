@@ -246,33 +246,86 @@ class AudioStreamer:
         return name
 
     def _set_mic_gains(self):
-        """Set microphone gain levels using ALSA commands."""
+        """Set microphone gain levels using ALSA commands after converting from PulseAudio IDs."""
         try:
             print(f"Setting microphone gain levels:")
             
+            # Helper function to convert PulseAudio source ID to ALSA card number and control
+            def pa_to_alsa(pa_source_id):
+                try:
+                    # Get detailed info about this specific source
+                    cmd = ['pactl', 'list', 'sources']
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    
+                    if result.returncode != 0:
+                        return None, None
+                    
+                    # Parse output to find our source and its ALSA properties
+                    lines = result.stdout.split('\n')
+                    source_section = False
+                    current_source_id = None
+                    alsa_card = None
+                    alsa_control = "Capture"  # Default control name
+                    
+                    for line in lines:
+                        line = line.strip()
+                        
+                        # Check if we're starting a new source section
+                        if line.startswith('Source #'):
+                            current_source_id = line.split('#')[1].strip()
+                            source_section = (current_source_id == pa_source_id)
+                        
+                        # If we're in the correct source section, look for ALSA properties
+                        if source_section:
+                            if 'alsa.card =' in line:
+                                alsa_card = line.split('=')[1].strip().strip('"')
+                            elif 'alsa.name =' in line:
+                                # Sometimes the control name can be derived from alsa.name
+                                name = line.split('=')[1].strip().strip('"')
+                                if 'mic' in name.lower() or 'capture' in name.lower():
+                                    # Try to guess a more specific control name if available
+                                    potential_control = name.split()[0]
+                                    if potential_control:
+                                        alsa_control = potential_control
+                    
+                    return alsa_card, alsa_control
+                except Exception as e:
+                    print(f"Error converting PA source to ALSA: {e}")
+                    return None, None
+            
             # Set personal mic gain if found
             if self.personal_mic_id:
-                # Use amixer with card number and control name
-                cmd = ['amixer', '-c', str(self.personal_mic_id), 'sset', 'Capture', f'{self.personal_mic_gain}%']
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                alsa_card, alsa_control = pa_to_alsa(self.personal_mic_id)
                 
-                if result.returncode == 0:
-                    print(f" → Set personal mic '{self.personal_mic_name}' (ID:{self.personal_mic_id}) gain to {self.personal_mic_gain}%")
+                if alsa_card:
+                    # Use amixer with card number and control name
+                    cmd = ['amixer', '-c', alsa_card, 'sset', alsa_control, f'{self.personal_mic_gain}%']
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    
+                    if result.returncode == 0:
+                        print(f" → Set personal mic '{self.personal_mic_name}' (ID:{self.personal_mic_id}, ALSA card:{alsa_card}) gain to {self.personal_mic_gain}%")
+                    else:
+                        print(f" → Failed to set personal mic gain: {result.stderr}")
                 else:
-                    print(f" → Failed to set personal mic gain: {result.stderr}")
+                    print(f" → Cannot set personal mic gain: ALSA device not found for PA source {self.personal_mic_id}")
             else:
                 print(f" → Cannot set personal mic gain: device not found")
             
             # Set global mic gain if found
             if self.global_mic_id:
-                # Use amixer with card number and control name
-                cmd = ['amixer', '-c', str(self.global_mic_id), 'sset', 'Capture', f'{self.global_mic_gain}%']
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                alsa_card, alsa_control = pa_to_alsa(self.global_mic_id)
                 
-                if result.returncode == 0:
-                    print(f" → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}) gain to {self.global_mic_gain}%")
+                if alsa_card:
+                    # Use amixer with card number and control name
+                    cmd = ['amixer', '-c', alsa_card, 'sset', alsa_control, f'{self.global_mic_gain}%']
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    
+                    if result.returncode == 0:
+                        print(f" → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}, ALSA card:{alsa_card}) gain to {self.global_mic_gain}%")
+                    else:
+                        print(f" → Failed to set global mic gain: {result.stderr}")
                 else:
-                    print(f" → Failed to set global mic gain: {result.stderr}")
+                    print(f" → Cannot set global mic gain: ALSA device not found for PA source {self.global_mic_id}")
             else:
                 print(f" → Cannot set global mic gain: device not found")
                 
