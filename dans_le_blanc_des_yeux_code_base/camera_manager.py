@@ -1,7 +1,6 @@
 """
-Raspberry Pi Camera Manager for the Dans le Blanc des Yeux installation.
-Specifically designed for Pi 5 with dedicated ribbon-cable cameras.
-Optimized for reduced logging during idle periods.
+Modified camera manager with optimized logging for the Dans le Blanc des Yeux installation.
+Reduces frame count logging to conserve resources and reduce log size.
 """
 
 import time
@@ -55,6 +54,12 @@ class CameraManager:
         # Autofocus setting
         self.enable_autofocus = enable_autofocus
         
+        # Frame counting - reduced logging
+        self.internal_frame_count = 0
+        self.external_frame_count = 0
+        self.last_log_time = time.time()
+        self.log_interval = 300  # Log camera stats every 5 minutes instead of by frame count
+        
         # Generate test pattern images for when cameras are unavailable
         self._create_test_frames()
         
@@ -62,30 +67,10 @@ class CameraManager:
         # If only one camera works, we'll use it for both roles
         self.use_same_camera_for_both = False
         
-        # Logging optimization
-        self.internal_frame_count = 0
-        self.external_frame_count = 0
-        self.last_log_time = 0
-        self.log_interval = 300  # Default 5 minutes between logs in idle mode
-        
-        # Register as observer to get idle mode updates
+        # Register for idle mode changes
         system_state.add_observer(self._on_state_change)
         
-        print("Pi Camera manager initialized")
-    
-    def _on_state_change(self, changed_state: str) -> None:
-        """Handle state changes, particularly idle mode transitions."""
-        if changed_state == "idle_mode":
-            # Adjust logging behavior based on idle mode
-            if system_state.is_idle_mode():
-                # In idle mode, log less frequently
-                self.log_interval = 300  # Every 5 minutes
-            else:
-                # In active mode, log more frequently
-                self.log_interval = 100  # Every 100 frames
-                
-            # Log the mode change
-            print(f"Camera logging adjusted to {'idle' if system_state.is_idle_mode() else 'active'} mode")
+        print("Pi Camera manager initialized with optimized logging")
     
     def _create_test_frames(self):
         """Create test pattern frames for when cameras are unavailable."""
@@ -118,6 +103,17 @@ class CameraManager:
         # Store test frames
         self.internal_test_frame = internal_test
         self.external_test_frame = external_test
+
+    def _on_state_change(self, changed_state: str) -> None:
+        """Handle system state changes."""
+        # Update logging interval based on idle mode
+        if changed_state == "idle_mode":
+            if system_state.is_idle_mode():
+                # When idle, log much less frequently
+                self.log_interval = 3600  # Once per hour in idle mode
+            else:
+                # In active mode, log more frequently
+                self.log_interval = 300  # Every 5 minutes in active mode
     
     def start(self) -> bool:
         """Initialize and start all cameras."""
@@ -209,7 +205,8 @@ class CameraManager:
                 print(f"Error stopping external camera: {e}")
             self.external_camera = None
         
-        print("Camera manager stopped")
+        # Log final frame counts
+        print(f"Camera manager stopped. Final frame counts - Internal: {self.internal_frame_count}, External: {self.external_frame_count}")
     
     def get_internal_frame(self) -> Optional[np.ndarray]:
         """Get the latest frame from the internal camera."""
@@ -358,23 +355,13 @@ class CameraManager:
                 self.external_camera = None
             return False
     
-    def _should_log_frame(self, camera_type: str, frame_count: int) -> bool:
-        """Determine if we should log frame information based on system state."""
+    def _should_log_stats(self) -> bool:
+        """Determine if it's time to log camera statistics based on time interval."""
         current_time = time.time()
-        
-        if system_state.is_idle_mode():
-            # In idle mode, only log based on time interval
-            should_log = (current_time - self.last_log_time) >= self.log_interval
-        else:
-            # In active mode, log every N frames but at most once per minute
-            should_log = (frame_count % self.log_interval == 0 and 
-                          (current_time - self.last_log_time) >= 60)
-        
-        # If we're logging, update the last log time
-        if should_log:
+        if current_time - self.last_log_time >= self.log_interval:
             self.last_log_time = current_time
-            
-        return should_log
+            return True
+        return False
     
     def _internal_capture_loop(self) -> None:
         """Continuously capture frames from the internal camera."""
@@ -396,13 +383,14 @@ class CameraManager:
                         if self.use_same_camera_for_both:
                             self.external_frame = frame.copy()
                     
-                    # Increment frame counter
+                    # Increment frame count
                     self.internal_frame_count += 1
                     
-                    # Log status periodically based on idle mode
-                    if self._should_log_frame("internal", self.internal_frame_count):
-                        print(f"Internal camera: captured {self.internal_frame_count} frames "
-                              f"({'idle' if system_state.is_idle_mode() else 'active'} mode)")
+                    # Log status periodically based on time interval instead of frame count
+                    if self._should_log_stats():
+                        is_idle = system_state.is_idle_mode()
+                        status = "IDLE" if is_idle else "ACTIVE"
+                        print(f"Camera status: {status} - Internal camera: captured {self.internal_frame_count} frames total")
                 else:
                     current_time = time.time()
                     if current_time - last_error_time > 5:
@@ -441,13 +429,14 @@ class CameraManager:
                     with self.lock:
                         self.external_frame = frame
                     
-                    # Increment frame counter
+                    # Increment frame count
                     self.external_frame_count += 1
                     
-                    # Log status periodically based on idle mode
-                    if self._should_log_frame("external", self.external_frame_count):
-                        print(f"External camera: captured {self.external_frame_count} frames "
-                              f"({'idle' if system_state.is_idle_mode() else 'active'} mode)")
+                    # Log status periodically based on time interval instead of frame count
+                    if self._should_log_stats():
+                        is_idle = system_state.is_idle_mode()
+                        status = "IDLE" if is_idle else "ACTIVE"
+                        print(f"Camera status: {status} - External camera: captured {self.external_frame_count} frames total")
                 else:
                     current_time = time.time()
                     if current_time - last_error_time > 5:

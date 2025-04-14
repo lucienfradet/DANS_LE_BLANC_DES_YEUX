@@ -1,7 +1,7 @@
 """
 Thread-safe state management for the Dans le Blanc des Yeux project.
 Uses a singleton pattern to ensure a single state instance across the application.
-debounce v3
+Added idle mode tracking for bandwidth optimization.
 """
 
 import threading
@@ -48,6 +48,10 @@ class SystemState:
             "timestamp": 0
         }
         
+        # Idle mode tracking
+        self._is_idle_mode = True  # Start in idle mode by default
+        self._idle_mode_since = time.time()  # When idle mode was entered
+        
         # Configuration
         self._config = configparser.ConfigParser()
         self._config.read('config.ini')
@@ -59,11 +63,6 @@ class SystemState:
         self._pressure_debounce_time = 1.0  # Default debounce time in seconds
         self._pressure_last_change_time = 0  # Timestamp of last pressure state change
         self._pressure_pending_value = None  # Pending pressure value awaiting debounce
-        
-        # Idle mode tracking
-        self._is_idle_mode = True  # Start in idle mode
-        self._last_activity_time = 0  # Time of last detected activity
-        self._idle_timeout = 30.0  # Time in seconds before switching to idle mode
     
     def get_local_state(self) -> Dict[str, Any]:
         """Get a copy of the local device state."""
@@ -75,51 +74,41 @@ class SystemState:
         with self._state_lock:
             return self._remote_device.copy()
     
+    def is_idle_mode(self) -> bool:
+        """Check if system is currently in idle mode."""
+        with self._state_lock:
+            return self._is_idle_mode
+    
+    def get_idle_mode_duration(self) -> float:
+        """Get the duration the system has been in the current idle mode state."""
+        with self._state_lock:
+            if self._is_idle_mode:
+                return time.time() - self._idle_mode_since
+            else:
+                return 0
+    
+    def update_idle_state(self, is_idle: bool) -> None:
+        """Update the idle mode state."""
+        changed = False
+        with self._state_lock:
+            if self._is_idle_mode != is_idle:
+                self._is_idle_mode = is_idle
+                self._idle_mode_since = time.time()
+                changed = True
+        
+        if changed:
+            self._notify_observers("idle_mode")
+    
     def set_pressure_debounce_time(self, debounce_time: float) -> None:
         """Set the pressure debounce time in seconds."""
         with self._state_lock:
             self._pressure_debounce_time = max(0.0, float(debounce_time))
             print(f"Pressure debounce time set to {self._pressure_debounce_time} seconds")
     
-    def set_idle_timeout(self, timeout_seconds: float) -> None:
-        """Set the idle timeout in seconds."""
-        with self._state_lock:
-            self._idle_timeout = max(5.0, float(timeout_seconds))
-            print(f"Idle timeout set to {self._idle_timeout} seconds")
-    
-    def is_idle_mode(self) -> bool:
-        """Check if the system is in idle mode."""
-        with self._state_lock:
-            # Check if we need to transition to idle mode
-            current_time = time.time()
-            if not self._is_idle_mode and (current_time - self._last_activity_time) >= self._idle_timeout:
-                self._is_idle_mode = True
-                print(f"System switched to idle mode after {self._idle_timeout} seconds of inactivity")
-                self._notify_observers("idle_mode")
-            
-            return self._is_idle_mode
-    
-    def update_activity(self) -> None:
-        """Mark that there was user activity, possibly exiting idle mode."""
-        with self._state_lock:
-            current_time = time.time()
-            self._last_activity_time = current_time
-            
-            # If we were in idle mode, exit it
-            if self._is_idle_mode:
-                self._is_idle_mode = False
-                print("System exited idle mode due to activity")
-                self._notify_observers("idle_mode")
-    
     def update_local_state(self, data: Dict[str, Any]) -> None:
         """Update the local device state with debounce for pressure changes."""
         current_time = time.time()
         changed = False
-        active = False
-        
-        # Check if this update indicates activity
-        if "pressure" in data and data["pressure"]:
-            active = True
         
         # Handle pressure with debounce
         if "pressure" in data:
@@ -138,9 +127,6 @@ class SystemState:
                         self._local_device["pressure"] = new_pressure
                         self._pressure_pending_value = None
                         changed = True
-                        
-                        # This is considered activity
-                        active = True
                 
                 # Process other state changes immediately
                 for key, value in data.items():
@@ -155,31 +141,17 @@ class SystemState:
                         self._local_device[key] = value
                         changed = True
         
-        # Update activity status
-        if active:
-            self.update_activity()
-        
         if changed:
             self._notify_observers("local")
     
     def update_remote_state(self, data: Dict[str, Any]) -> None:
         """Update the remote device state."""
-        active = False
-        
         with self._state_lock:
             changed = False
             for key, value in data.items():
                 if key in self._remote_device and self._remote_device[key] != value:
                     self._remote_device[key] = value
                     changed = True
-            
-            # If remote has pressure, this is activity
-            if "pressure" in data and data["pressure"]:
-                active = True
-        
-        # Update activity status if there's remote pressure
-        if active:
-            self.update_activity()
         
         if changed:
             self._notify_observers("remote")
@@ -208,9 +180,6 @@ class SystemState:
                 "z": z,
                 "timestamp": time.time()
             }
-        
-        # Motor movement is activity
-        self.update_activity()
         
         # Notify observers of motor command
         self._notify_observers("motor_command")
