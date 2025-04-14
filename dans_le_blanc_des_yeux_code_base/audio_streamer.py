@@ -245,87 +245,96 @@ class AudioStreamer:
             return '.'.join(parts[:-1])
         return name
 
-    def _set_mic_gains(self):
-        """Set microphone gain levels using ALSA commands after converting from PulseAudio IDs."""
+    def set_mic_gains(self):
+        """Set microphone gain levels using ALSA commands."""
         try:
-            print(f"Setting microphone gain levels:")
+            import re
             
-            # Helper function to convert PulseAudio source ID to ALSA card number and control
-            def pa_to_alsa(pa_source_id):
+            # Helper function to convert PulseAudio ID to ALSA card number
+            def get_alsa_card_for_pa_source(pa_source_id):
                 try:
-                    # Get detailed info about this specific source
-                    cmd = ['pactl', 'list', 'sources']
-                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    # Get detailed info about all PA sources
+                    result = subprocess.run(['pactl', 'list', 'sources'], 
+                                          stdout=subprocess.PIPE, 
+                                          stderr=subprocess.PIPE, 
+                                          text=True)
                     
                     if result.returncode != 0:
-                        return None, None
+                        print(f"Failed to get source info: {result.stderr}")
+                        return None
                     
-                    # Parse output to find our source and its ALSA properties
-                    lines = result.stdout.split('\n')
-                    source_section = False
-                    current_source_id = None
-                    alsa_card = None
-                    alsa_control = "Capture"  # Default control name
+                    # Split output into sections by source
+                    source_pattern = re.compile(r'Source #(\d+)')
+                    sections = []
+                    current_section = []
+                    current_id = None
                     
-                    for line in lines:
-                        line = line.strip()
-                        
-                        # Check if we're starting a new source section
-                        if line.startswith('Source #'):
-                            current_source_id = line.split('#')[1].strip()
-                            source_section = (current_source_id == pa_source_id)
-                        
-                        # If we're in the correct source section, look for ALSA properties
-                        if source_section:
-                            if 'alsa.card =' in line:
-                                alsa_card = line.split('=')[1].strip().strip('"')
-                            elif 'alsa.name =' in line:
-                                # Sometimes the control name can be derived from alsa.name
-                                name = line.split('=')[1].strip().strip('"')
-                                if 'mic' in name.lower() or 'capture' in name.lower():
-                                    # Try to guess a more specific control name if available
-                                    potential_control = name.split()[0]
-                                    if potential_control:
-                                        alsa_control = potential_control
+                    for line in result.stdout.split('\n'):
+                        match = source_pattern.match(line)
+                        if match:
+                            if current_section:
+                                sections.append((current_id, current_section))
+                            current_id = match.group(1)
+                            current_section = [line]
+                        elif current_section:
+                            current_section.append(line)
                     
-                    return alsa_card, alsa_control
+                    # Add the last section
+                    if current_section:
+                        sections.append((current_id, current_section))
+                    
+                    # Find the section with matching ID
+                    for section_id, section_lines in sections:
+                        if section_id == pa_source_id:
+                            # Found our source, now look for alsa.card
+                            for line in section_lines:
+                                card_match = re.search(r'alsa\.card\s*=\s*"(\d+)"', line)
+                                if card_match:
+                                    return card_match.group(1)
+                    
+                    print(f"Could not find ALSA card for PA source {pa_source_id}")
+                    return None
                 except Exception as e:
-                    print(f"Error converting PA source to ALSA: {e}")
-                    return None, None
+                    print(f"Error getting ALSA card for PA source {pa_source_id}: {e}")
+                    return None
+            
+            print(f"Setting microphone gain levels:")
             
             # Set personal mic gain if found
             if self.personal_mic_id:
-                alsa_card, alsa_control = pa_to_alsa(self.personal_mic_id)
+                # Convert PA ID to ALSA card number
+                personal_alsa_card = get_alsa_card_for_pa_source(self.personal_mic_id)
                 
-                if alsa_card:
-                    # Use amixer with card number and control name
-                    cmd = ['amixer', '-c', alsa_card, 'sset', alsa_control, f'{self.personal_mic_gain}%']
+                if personal_alsa_card:
+                    # Use amixer with card number and "Capture" control
+                    cmd = ['amixer', '-c', personal_alsa_card, 'sset', 'Capture', f'{self.personal_mic_gain}%']
                     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     
                     if result.returncode == 0:
-                        print(f" → Set personal mic '{self.personal_mic_name}' (ID:{self.personal_mic_id}, ALSA card:{alsa_card}) gain to {self.personal_mic_gain}%")
+                        print(f" → Set personal mic '{self.personal_mic_name}' (ID:{self.personal_mic_id}) gain to {self.personal_mic_gain}%")
                     else:
                         print(f" → Failed to set personal mic gain: {result.stderr}")
                 else:
-                    print(f" → Cannot set personal mic gain: ALSA device not found for PA source {self.personal_mic_id}")
+                    print(f" → Cannot set personal mic gain: couldn't get ALSA card number")
             else:
                 print(f" → Cannot set personal mic gain: device not found")
             
             # Set global mic gain if found
             if self.global_mic_id:
-                alsa_card, alsa_control = pa_to_alsa(self.global_mic_id)
+                # Convert PA ID to ALSA card number
+                global_alsa_card = get_alsa_card_for_pa_source(self.global_mic_id)
                 
-                if alsa_card:
-                    # Use amixer with card number and control name
-                    cmd = ['amixer', '-c', alsa_card, 'sset', alsa_control, f'{self.global_mic_gain}%']
+                if global_alsa_card:
+                    # Use amixer with card number and "Capture" control
+                    cmd = ['amixer', '-c', global_alsa_card, 'sset', 'Capture', f'{self.global_mic_gain}%']
                     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     
                     if result.returncode == 0:
-                        print(f" → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}, ALSA card:{alsa_card}) gain to {self.global_mic_gain}%")
+                        print(f" → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}) gain to {self.global_mic_gain}%")
                     else:
                         print(f" → Failed to set global mic gain: {result.stderr}")
                 else:
-                    print(f" → Cannot set global mic gain: ALSA device not found for PA source {self.global_mic_id}")
+                    print(f" → Cannot set global mic gain: couldn't get ALSA card number")
             else:
                 print(f" → Cannot set global mic gain: device not found")
                 
