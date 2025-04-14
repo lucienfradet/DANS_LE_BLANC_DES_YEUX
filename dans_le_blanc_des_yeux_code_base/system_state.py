@@ -1,7 +1,7 @@
 """
 Thread-safe state management for the Dans le Blanc des Yeux project.
 Uses a singleton pattern to ensure a single state instance across the application.
-Added idle mode tracking for bandwidth optimization.
+debounce v3
 """
 
 import threading
@@ -48,10 +48,6 @@ class SystemState:
             "timestamp": 0
         }
         
-        # Idle mode tracking
-        self._is_idle_mode = True  # Start in idle mode by default
-        self._idle_mode_since = time.time()  # When idle mode was entered
-        
         # Configuration
         self._config = configparser.ConfigParser()
         self._config.read('config.ini')
@@ -73,31 +69,6 @@ class SystemState:
         """Get a copy of the remote device state."""
         with self._state_lock:
             return self._remote_device.copy()
-    
-    def is_idle_mode(self) -> bool:
-        """Check if system is currently in idle mode."""
-        with self._state_lock:
-            return self._is_idle_mode
-    
-    def get_idle_mode_duration(self) -> float:
-        """Get the duration the system has been in the current idle mode state."""
-        with self._state_lock:
-            if self._is_idle_mode:
-                return time.time() - self._idle_mode_since
-            else:
-                return 0
-    
-    def update_idle_state(self, is_idle: bool) -> None:
-        """Update the idle mode state."""
-        changed = False
-        with self._state_lock:
-            if self._is_idle_mode != is_idle:
-                self._is_idle_mode = is_idle
-                self._idle_mode_since = time.time()
-                changed = True
-        
-        if changed:
-            self._notify_observers("idle_mode")
     
     def set_pressure_debounce_time(self, debounce_time: float) -> None:
         """Set the pressure debounce time in seconds."""

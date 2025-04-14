@@ -1,6 +1,6 @@
 """
-Modified camera manager with optimized logging for the Dans le Blanc des Yeux installation.
-Reduces frame count logging to conserve resources and reduce log size.
+Raspberry Pi Camera Manager for the Dans le Blanc des Yeux installation.
+Specifically designed for Pi 5 with dedicated ribbon-cable cameras.
 """
 
 import time
@@ -8,8 +8,6 @@ import threading
 import cv2
 import numpy as np
 from typing import Dict, Optional, Tuple, List
-
-from system_state import system_state
 
 class CameraManager:
     """Manages multiple Pi Camera modules connected via ribbon cables."""
@@ -54,12 +52,6 @@ class CameraManager:
         # Autofocus setting
         self.enable_autofocus = enable_autofocus
         
-        # Frame counting - reduced logging
-        self.internal_frame_count = 0
-        self.external_frame_count = 0
-        self.last_log_time = time.time()
-        self.log_interval = 300  # Log camera stats every 5 minutes instead of by frame count
-        
         # Generate test pattern images for when cameras are unavailable
         self._create_test_frames()
         
@@ -67,10 +59,7 @@ class CameraManager:
         # If only one camera works, we'll use it for both roles
         self.use_same_camera_for_both = False
         
-        # Register for idle mode changes
-        system_state.add_observer(self._on_state_change)
-        
-        print("Pi Camera manager initialized with optimized logging")
+        print("Pi Camera manager initialized")
     
     def _create_test_frames(self):
         """Create test pattern frames for when cameras are unavailable."""
@@ -103,17 +92,6 @@ class CameraManager:
         # Store test frames
         self.internal_test_frame = internal_test
         self.external_test_frame = external_test
-
-    def _on_state_change(self, changed_state: str) -> None:
-        """Handle system state changes."""
-        # Update logging interval based on idle mode
-        if changed_state == "idle_mode":
-            if system_state.is_idle_mode():
-                # When idle, log much less frequently
-                self.log_interval = 3600  # Once per hour in idle mode
-            else:
-                # In active mode, log more frequently
-                self.log_interval = 300  # Every 5 minutes in active mode
     
     def start(self) -> bool:
         """Initialize and start all cameras."""
@@ -205,8 +183,7 @@ class CameraManager:
                 print(f"Error stopping external camera: {e}")
             self.external_camera = None
         
-        # Log final frame counts
-        print(f"Camera manager stopped. Final frame counts - Internal: {self.internal_frame_count}, External: {self.external_frame_count}")
+        print("Camera manager stopped")
     
     def get_internal_frame(self) -> Optional[np.ndarray]:
         """Get the latest frame from the internal camera."""
@@ -355,18 +332,11 @@ class CameraManager:
                 self.external_camera = None
             return False
     
-    def _should_log_stats(self) -> bool:
-        """Determine if it's time to log camera statistics based on time interval."""
-        current_time = time.time()
-        if current_time - self.last_log_time >= self.log_interval:
-            self.last_log_time = current_time
-            return True
-        return False
-    
     def _internal_capture_loop(self) -> None:
         """Continuously capture frames from the internal camera."""
         print("Internal camera capture thread started")
         
+        frame_count = 0
         last_error_time = 0
         
         while self.running and self.internal_camera is not None:
@@ -383,14 +353,10 @@ class CameraManager:
                         if self.use_same_camera_for_both:
                             self.external_frame = frame.copy()
                     
-                    # Increment frame count
-                    self.internal_frame_count += 1
-                    
-                    # Log status periodically based on time interval instead of frame count
-                    if self._should_log_stats():
-                        is_idle = system_state.is_idle_mode()
-                        status = "IDLE" if is_idle else "ACTIVE"
-                        print(f"Camera status: {status} - Internal camera: captured {self.internal_frame_count} frames total")
+                    # Log status periodically
+                    frame_count += 1
+                    if frame_count % 100 == 0:
+                        print(f"Internal camera: captured {frame_count} frames")
                 else:
                     current_time = time.time()
                     if current_time - last_error_time > 5:
@@ -417,6 +383,7 @@ class CameraManager:
         """Continuously capture frames from the external camera."""
         print("External camera capture thread started")
         
+        frame_count = 0
         last_error_time = 0
         
         while self.running and self.external_camera is not None:
@@ -429,14 +396,10 @@ class CameraManager:
                     with self.lock:
                         self.external_frame = frame
                     
-                    # Increment frame count
-                    self.external_frame_count += 1
-                    
-                    # Log status periodically based on time interval instead of frame count
-                    if self._should_log_stats():
-                        is_idle = system_state.is_idle_mode()
-                        status = "IDLE" if is_idle else "ACTIVE"
-                        print(f"Camera status: {status} - External camera: captured {self.external_frame_count} frames total")
+                    # Log status periodically
+                    frame_count += 1
+                    if frame_count % 100 == 0:
+                        print(f"External camera: captured {frame_count} frames")
                 else:
                     current_time = time.time()
                     if current_time - last_error_time > 5:
@@ -458,3 +421,78 @@ class CameraManager:
                     self.external_frame = self.external_test_frame
                 
                 time.sleep(0.5)
+
+
+# Test function to run the camera manager standalone
+def test_camera_manager():
+    """Test the camera manager by displaying frames from both cameras."""
+    import cv2
+    
+    # Initialize camera manager with custom dimensions and autofocus
+    camera_manager = CameraManager(
+        internal_frame_width=640,
+        internal_frame_height=480,
+        external_frame_width=800,
+        external_frame_height=600,
+        enable_autofocus=True
+    )
+    
+    if not camera_manager.start():
+        print("Failed to start camera manager")
+        return
+    
+    try:
+        while True:
+            # Get frames
+            internal_frame = camera_manager.get_internal_frame()
+            external_frame = camera_manager.get_external_frame()
+            
+            # Create combined display
+            if internal_frame is not None and external_frame is not None:
+                # Resize to same height if necessary
+                h1, w1 = internal_frame.shape[:2]
+                h2, w2 = external_frame.shape[:2]
+                
+                # Calculate new dimensions to make heights equal
+                if h1 != h2:
+                    if h1 > h2:
+                        w2 = int(w2 * (h1 / h2))
+                        external_frame = cv2.resize(external_frame, (w2, h1))
+                    else:
+                        w1 = int(w1 * (h2 / h1))
+                        internal_frame = cv2.resize(internal_frame, (w1, h2))
+                
+                # Stack side by side
+                combined = np.hstack((internal_frame, external_frame))
+                
+                # Add labels
+                cv2.putText(combined, "Internal Camera", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(combined, "External Camera", (w1 + 10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
+                # Display
+                cv2.imshow("Camera Test", combined)
+            else:
+                # Display available frames individually
+                if internal_frame is not None:
+                    cv2.imshow("Internal Camera", internal_frame)
+                if external_frame is not None:
+                    cv2.imshow("External Camera", external_frame)
+            
+            # Exit on 'q' key
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    except KeyboardInterrupt:
+        print("Test interrupted by user")
+    except Exception as e:
+        print(f"Error in test: {e}")
+    finally:
+        # Clean up
+        camera_manager.stop()
+        cv2.destroyAllWindows()
+
+
+# Run test if executed directly
+if __name__ == "__main__":
+    test_camera_manager()
