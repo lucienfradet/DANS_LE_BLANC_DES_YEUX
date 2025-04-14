@@ -245,7 +245,7 @@ class AudioStreamer:
             return '.'.join(parts[:-1])
         return name
 
-    def set_mic_gains(self):
+    def _set_mic_gains(self):
         """Set microphone gain levels using ALSA commands."""
         try:
             print(f"Setting microphone gain levels:")
