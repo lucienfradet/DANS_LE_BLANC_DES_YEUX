@@ -256,7 +256,7 @@ class AudioStreamer:
             # Set Master mic gain
             if self.master_mic_gain:
                 # Use amixer with card number and "Capture" control
-                cmd = ['amixer', 'cset', "iface=MIXER,name='Capture Volume'", f'{self.master_mic_gain}%']
+                cmd = ['amixer', 'sset', 'Capture', f'{self.master_mic_gain}%']
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
                 if result.returncode == 0:
