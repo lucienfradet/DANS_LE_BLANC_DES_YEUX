@@ -308,7 +308,7 @@ class AudioStreamer:
                 
                 if personal_alsa_card:
                     # Use amixer with card number and "Capture" control
-                    cmd = ['amixer', '-c', personal_alsa_card, 'sset', 'Capture', f'{self.personal_mic_gain}%']
+                    cmd = ['amixer', '-c', personal_alsa_card, 'cset', "iface=MIXER,name='Mic Capture Volume'", f'{self.personal_mic_gain}%']
                     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     
                     if result.returncode == 0:
@@ -328,7 +328,7 @@ class AudioStreamer:
                 
                 if global_alsa_card:
                     # Use amixer with card number and "Capture" control
-                    cmd = ['amixer', '-c', global_alsa_card, 'sset', 'Capture', f'{self.global_mic_gain}%']
+                    cmd = ['amixer', '-c', global_alsa_card, 'cset',  "iface=MIXER,name='Mic Capture Volume", f'{self.global_mic_gain}%']
                     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     
                     if result.returncode == 0:
