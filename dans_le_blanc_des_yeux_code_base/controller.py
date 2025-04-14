@@ -1,9 +1,10 @@
 """
 Main controller for the Dans le Blanc des Yeux installation.
 Uses SSH console input to toggle the visualizer.
+Modified to support idle mode for bandwidth conservation.
 
 Usage:
-    python controller.py [--visualize] [--disable-video] [--disable-audio]
+    python controller.py [--visualize] [--disable-video] [--disable-audio] [--idle-timeout SECONDS]
 """
 
 import configparser
@@ -70,14 +71,30 @@ def toggle_visualizer():
         visualizer_active = True
     
     # Print prompt again to make it clear we're waiting for input
-    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+    print("[v=toggle visualizer, q=quit, s=show status]: ", end='', flush=True)
+
+def show_system_status():
+    """Display the current system status including idle mode"""
+    # Get current states
+    local_state = system_state.get_local_state()
+    remote_state = system_state.get_remote_state()
+    
+    # Display status
+    print("\nSystem Status:")
+    print(f"  Idle Mode: {'Active' if system_state.is_idle_mode() else 'Inactive'}")
+    print(f"  Connection Status: {'Connected' if remote_state.get('connected', False) else 'Disconnected'}")
+    print(f"  Local Pressure: {'Yes' if local_state.get('pressure', False) else 'No'}")
+    print(f"  Remote Pressure: {'Yes' if remote_state.get('pressure', False) else 'No'}")
+    
+    # Print prompt again
+    print("[v=toggle visualizer, q=quit, s=show status]: ", end='', flush=True)
 
 def input_monitor():
     """Thread that monitors for user input to toggle visualizer"""
     global stop_input_thread
     
     print("\nCommand prompt ready. Type and press Enter:")
-    print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+    print("[v=toggle visualizer, q=quit, s=show status]: ", end='', flush=True)
     
     while not stop_input_thread:
         try:
@@ -85,12 +102,14 @@ def input_monitor():
             key = input().lower().strip()
             if key == 'v':
                 toggle_visualizer()
+            elif key == 's':
+                show_system_status()
             elif key == 'q':
                 print("\nQuitting application...")
                 os.kill(os.getpid(), signal.SIGINT)
             elif key:  # Any other command
                 print(f"Unknown command: '{key}'")
-                print("[v=toggle visualizer, q=quit]: ", end='', flush=True)
+                print("[v=toggle visualizer, q=quit, s=show status]: ", end='', flush=True)
         except Exception as e:
             # if not stop_input_thread:  # Only log errors if we're still supposed to be running
                 # print(f"\nInput monitor error: {e}")
@@ -182,7 +201,7 @@ def signal_handler(sig, frame):
     print("Shutdown complete.")
     sys.exit(0)
 
-def initialize_components():
+def initialize_components(idle_timeout=30.0):
     """Initialize all components of the system."""
     global osc_handler, serial_handler, motor_controller
     global camera_manager, video_streamer, video_display
@@ -203,11 +222,22 @@ def initialize_components():
     remote_ip = config['ip']['pi-ip']
     print(f"Using remote IP: {remote_ip}")
 
+    # Configure idle timeout if specified in config
+    if 'system' in config and 'idle_timeout' in config['system']:
+        try:
+            config_idle_timeout = config.getfloat('system', 'idle_timeout', fallback=30.0)
+            idle_timeout = config_idle_timeout
+        except (ValueError, configparser.Error) as e:
+            print(f"Error reading idle_timeout from config: {e}. Using command line or default.")
+    
+    # Set idle timeout
+    system_state.set_idle_timeout(idle_timeout)
+    print(f"Set idle timeout to {idle_timeout} seconds")
+    
     # Set pressure debounce time if available in config
     if 'system' in config and 'pressure_debounce_time' in config['system']:
         try:
             debounce_time = config.getfloat('system', 'pressure_debounce_time', fallback=1.0)
-            from system_state import system_state
             system_state.set_pressure_debounce_time(debounce_time)
             print(f"Set pressure debounce time to {debounce_time} seconds")
         except (ValueError, configparser.Error) as e:
@@ -413,6 +443,8 @@ if __name__ == "__main__":
     parser.add_argument('--disable-video', action='store_true', help='Disable video components')
     parser.add_argument('--disable-audio', action='store_true', help='Disable audio components')
     parser.add_argument('--service', action='store_true', help='Run in service mode (no input monitor)')
+    parser.add_argument('--idle-timeout', type=float, default=30.0, 
+                        help='Seconds of inactivity before switching to idle mode (default: 30)')
     args = parser.parse_args()
     
     # Register signal handlers for graceful shutdown
@@ -434,8 +466,8 @@ if __name__ == "__main__":
         input_thread.daemon = True
         input_thread.start()
         
-        # Initialize core components
-        remote_ip, config, core_components = initialize_components()
+        # Initialize core components with idle timeout
+        remote_ip, config, core_components = initialize_components(args.idle_timeout)
         
         # Keep references to avoid garbage collection
         osc_handler, serial_handler, motor_controller = core_components
@@ -450,6 +482,10 @@ if __name__ == "__main__":
         # Initialize video components after audio
         if not args.disable_video:
             camera_manager, video_streamer, video_display = initialize_video_components(remote_ip, config, args.disable_video)
+        
+        # Print initial idle mode status
+        print(f"System starting in idle mode. Will exit idle mode when pressure is detected.")
+        print(f"Will return to idle mode after {args.idle_timeout} seconds of inactivity.")
         
         # Keep main thread alive while the input thread handles commands
         while True:
