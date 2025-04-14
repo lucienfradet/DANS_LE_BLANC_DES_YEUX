@@ -62,6 +62,7 @@ class AudioStreamer:
         # Gain settings (will be loaded from config)
         self.personal_mic_gain = 65  # Default value
         self.global_mic_gain = 75    # Default value
+        self.master_mic_gain = 15 # Default value
         
         # Streaming state
         self.current_mic_sending = None  # "personal" or "global" or None
@@ -106,12 +107,14 @@ class AudioStreamer:
                 # Load gain settings
                 self.personal_mic_gain = config.getint('audio', 'personal_mic_gain', fallback=65)
                 self.global_mic_gain = config.getint('audio', 'global_mic_gain', fallback=75)
+                self.master_mic_gain = config.getint('audio', 'master_mic_gain', fallback=15)
                 
                 print(f"Loaded audio device names from config.ini:")
                 print(f"  personal mic name: {self.personal_mic_name}")
                 print(f"  global mic name: {self.global_mic_name}")
                 print(f"  personal mic gain: {self.personal_mic_gain}")
                 print(f"  global mic gain: {self.global_mic_gain}")
+                print(f"  MASTER mic gain: {self.master_mic_gain}")
             else:
                 print("No [audio] section found in config.ini, using default settings")
                 
@@ -249,6 +252,12 @@ class AudioStreamer:
         """Set microphone gain levels using ALSA commands."""
         try:
             import re
+
+            # Set Master mic gain
+            if self.master_mic_gain:
+                # Use amixer with card number and "Capture" control
+                cmd = ['amixer', 'cset', "iface=MIXER,name='Capture Volume'", f'{self.master_mic_gain}%']
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             
             # Helper function to convert PulseAudio ID to ALSA card number
             def get_alsa_card_for_pa_source(pa_source_id):
