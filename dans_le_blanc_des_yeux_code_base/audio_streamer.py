@@ -304,6 +304,7 @@ class AudioStreamer:
             if self.personal_mic_id:
                 # Convert PA ID to ALSA card number
                 personal_alsa_card = get_alsa_card_for_pa_source(self.personal_mic_id)
+                print(f"found personal card: {personal_alsa_card}")
                 
                 if personal_alsa_card:
                     # Use amixer with card number and "Capture" control
@@ -323,6 +324,7 @@ class AudioStreamer:
             if self.global_mic_id:
                 # Convert PA ID to ALSA card number
                 global_alsa_card = get_alsa_card_for_pa_source(self.global_mic_id)
+                print(f"found global card: {global_alsa_card}")
                 
                 if global_alsa_card:
                     # Use amixer with card number and "Capture" control
