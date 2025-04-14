@@ -1,6 +1,6 @@
 """
 OSC communication handler with corrected port configuration to ensure
-both devices can properly communicate with each other.
+both devices can properly communicate with each other. :)
 """
 
 import time
