@@ -258,6 +258,11 @@ class AudioStreamer:
                 # Use amixer with card number and "Capture" control
                 cmd = ['amixer', 'cset', "iface=MIXER,name='Capture Volume'", f'{self.master_mic_gain}%']
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                if result.returncode == 0:
+                    print(f" → Set MASTER mic gain to {self.master_mic_gain}%")
+                else:
+                    print(f" → Failed to set MASTER mic gain: {result.stderr}")
             
             # Helper function to convert PulseAudio ID to ALSA card number
             def get_alsa_card_for_pa_source(pa_source_id):
