@@ -245,42 +245,36 @@ class AudioStreamer:
             return '.'.join(parts[:-1])
         return name
 
-    def _set_mic_gains(self):
-        """Set microphone gain levels using PulseAudio commands."""
+    def set_mic_gains(self):
+        """Set microphone gain levels using ALSA commands."""
         try:
-            # Convert gain percentage (0-100) to volume level PulseAudio expects (0.0-1.0)
-            personal_volume = self.personal_mic_gain / 100.0
-            global_volume = self.global_mic_gain / 100.0
-            
-            # Format as PulseAudio expects (0x10000 = 100% = 1.0)
-            personal_pa_volume = int(personal_volume * 0x10000)
-            global_pa_volume = int(global_volume * 0x10000)
-            
             print(f"Setting microphone gain levels:")
             
             # Set personal mic gain if found
             if self.personal_mic_id:
-                cmd = ['pactl', 'set-source-volume', self.personal_mic_id, f'{personal_pa_volume}']
+                # Use amixer with card number and control name
+                cmd = ['amixer', '-c', str(self.personal_mic_id), 'sset', 'Capture', f'{self.personal_mic_gain}%']
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 
                 if result.returncode == 0:
-                    print(f"  → Set personal mic '{self.personal_mic_name}' (ID:{self.personal_mic_id}) gain to {self.personal_mic_gain}%")
+                    print(f" → Set personal mic '{self.personal_mic_name}' (ID:{self.personal_mic_id}) gain to {self.personal_mic_gain}%")
                 else:
-                    print(f"  → Failed to set personal mic gain: {result.stderr}")
+                    print(f" → Failed to set personal mic gain: {result.stderr}")
             else:
-                print(f"  → Cannot set personal mic gain: device not found")
+                print(f" → Cannot set personal mic gain: device not found")
             
             # Set global mic gain if found
             if self.global_mic_id:
-                cmd = ['pactl', 'set-source-volume', self.global_mic_id, f'{global_pa_volume}']
+                # Use amixer with card number and control name
+                cmd = ['amixer', '-c', str(self.global_mic_id), 'sset', 'Capture', f'{self.global_mic_gain}%']
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 
                 if result.returncode == 0:
-                    print(f"  → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}) gain to {self.global_mic_gain}%")
+                    print(f" → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}) gain to {self.global_mic_gain}%")
                 else:
-                    print(f"  → Failed to set global mic gain: {result.stderr}")
+                    print(f" → Failed to set global mic gain: {result.stderr}")
             else:
-                print(f"  → Cannot set global mic gain: device not found")
+                print(f" → Cannot set global mic gain: device not found")
                 
         except Exception as e:
             print(f"Error setting microphone gain levels: {e}")
