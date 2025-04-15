@@ -357,6 +357,16 @@ class AudioStreamer:
                 
         except Exception as e:
             print(f"Error setting microphone gain levels: {e}")
+
+    # After changing pipeline states, reset the capture volume
+    def _reset_capture_volume(self):
+        """Reset the master capture volume that might have been changed by GStreamer."""
+        try:
+            cmd = ['amixer', 'sset', 'Capture', f'{self.master_mic_gain}%']
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            print(f"Reset MASTER mic gain to {self.master_mic_gain}%")
+        except Exception as e:
+            print(f"Error resetting capture volume: {e}")
     
     def start(self) -> bool:
         """Start the audio streaming system with persistent pipelines."""
@@ -484,6 +494,8 @@ class AudioStreamer:
                         self.global_pipeline.set_state(Gst.State.READY)
                 
                 self.global_pipeline_active = should_global_be_active
+
+        self._reset_capture_volume()
         
         # Update system state with audio info
         system_state.update_audio_state({
