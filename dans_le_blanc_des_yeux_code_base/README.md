@@ -27,6 +27,9 @@ Dans le Blanc des Yeux is an interactive art installation that uses Raspberry Pi
 ```bash
 # not fully up to date!
 sudo ./setup.sh
+
+# If you need wifi, make sure you remove this line from /boot/firmware/config.txt
+dtoverlay=disable-wifi
 ```
 
 3. Configure `config.ini` with the correct IP addresses and hardware settings
