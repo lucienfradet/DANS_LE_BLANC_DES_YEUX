@@ -1,37 +1,48 @@
 #!/bin/bash
-
-# Define the GPIO pin number (BCM 22 / D6)
+# LTE HAT control script for Raspberry Pi 5
+# Define the GPIO pin number
 PIN=22
+CHIP=0  # gpiochip0 as seen in your gpioinfo output
 
-# Function to set up the GPIO
+# Function to set up the GPIO using the newer gpiod interface
 setup_gpio() {
-  # Export the GPIO pin if not already exported
-  if [ ! -e /sys/class/gpio/gpio$PIN ]; then
-    echo $PIN > /sys/class/gpio/export
-    # Give the system time to set up the pin
-    sleep 0.1
+  echo "Setting up GPIO..."
+  # Check if the pin is already exported by our script
+  if [ -e /dev/gpiochip$CHIP ]; then
+    # Configure the pin as output if not already configured
+    if ! gpioget gpiochip$CHIP $PIN &>/dev/null; then
+      gpioset --mode=signal gpiochip$CHIP $PIN=0
+    fi
+  else
+    echo "Error: GPIO chip not found!"
+    exit 1
   fi
-  
-  # Set GPIO direction to output
-  echo "out" > /sys/class/gpio/gpio$PIN/direction
 }
 
 # Function to turn ON the LTE HAT
 power_on() {
   echo "Turning ON LTE HAT..."
-  echo "1" > /sys/class/gpio/gpio$PIN/value
+  gpioset gpiochip$CHIP $PIN=1
 }
 
 # Function to turn OFF the LTE HAT
 power_off() {
   echo "Turning OFF LTE HAT..."
-  echo "0" > /sys/class/gpio/gpio$PIN/value
+  gpioset gpiochip$CHIP $PIN=0
 }
 
-# Function to clean up (unexport the GPIO)
-cleanup() {
-  echo "Cleaning up GPIO..."
-  echo $PIN > /sys/class/gpio/unexport
+# Function to get status
+get_status() {
+  STATUS=$(gpioget gpiochip$CHIP $PIN 2>/dev/null)
+  if [ "$?" -eq 0 ]; then
+    if [ "$STATUS" -eq "1" ]; then
+      echo "LTE HAT is ON"
+    else
+      echo "LTE HAT is OFF"
+    fi
+  else
+    echo "GPIO pin not configured or error reading status"
+  fi
 }
 
 # Main script execution
@@ -45,24 +56,11 @@ case "$1" in
     power_off
     ;;
   status)
-    if [ -e /sys/class/gpio/gpio$PIN/value ]; then
-      value=$(cat /sys/class/gpio/gpio$PIN/value)
-      if [ "$value" -eq "1" ]; then
-        echo "LTE HAT is ON"
-      else
-        echo "LTE HAT is OFF"
-      fi
-    else
-      echo "GPIO pin not configured"
-    fi
-    ;;
-  cleanup)
-    cleanup
+    get_status
     ;;
   *)
-    echo "Usage: $0 {on|off|status|cleanup}"
+    echo "Usage: $0 {on|off|status}"
     exit 1
     ;;
 esac
-
 exit 0
