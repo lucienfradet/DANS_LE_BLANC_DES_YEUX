@@ -520,8 +520,6 @@ class AudioStreamer:
                 
                 self.global_pipeline_active = should_global_be_active
 
-        self._set_mic_gains()
-        
         # Update system state with audio info
         system_state.update_audio_state({
             "audio_sending": should_personal_be_active or should_global_be_active,
