@@ -28,7 +28,7 @@ from camera_manager import CameraManager
 # Port configuration
 INTERNAL_STREAM_PORT = 5000  # Port for internal camera stream
 EXTERNAL_STREAM_PORT = 5001  # Port for external camera stream
-BITRATE = 300
+BITRATE = 800
 
 # Initialize GStreamer
 Gst.init(None)
