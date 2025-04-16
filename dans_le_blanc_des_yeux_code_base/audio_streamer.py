@@ -74,6 +74,10 @@ class AudioStreamer:
         # Pipeline states
         self.personal_pipeline_active = False
         self.global_pipeline_active = False
+
+        # Add tracking of previous pressure states
+        self.previous_local_pressure = False
+        self.previous_remote_pressure = False
         
         # Threading
         self.running = False
@@ -358,8 +362,7 @@ class AudioStreamer:
         except Exception as e:
             print(f"Error setting microphone gain levels: {e}")
 
-    # After changing pipeline states, reset the capture volume
-    def _reset_capture_volume(self):
+    def _reset_master_volume(self):
         """Reset the master capture volume that might have been changed by GStreamer."""
         try:
             cmd = ['amixer', 'sset', 'Capture', f'{self.master_mic_gain}%']
@@ -412,9 +415,31 @@ class AudioStreamer:
         print("Audio streamer stopped")
     
     def _on_state_change(self, changed_state: str) -> None:
-        """Handle system state changes."""
+        """Handle system state changes - only respond to pressure changes."""
         if changed_state in ["local", "remote"]:
-            self._update_streaming_based_on_state()
+            # Get current state
+            local_state = system_state.get_local_state()
+            remote_state = system_state.get_remote_state()
+            
+            # Get current pressure values
+            current_local_pressure = local_state.get("pressure", False)
+            current_remote_pressure = remote_state.get("connected", False) and remote_state.get("pressure", False)
+            
+            # Check if pressure state has changed
+            local_pressure_changed = current_local_pressure != self.previous_local_pressure
+            remote_pressure_changed = current_remote_pressure != self.previous_remote_pressure
+            
+            # Only update if pressure state changed
+            if local_pressure_changed or remote_pressure_changed:
+                print(f"Pressure state changed detected in audio_streamer: local {self.previous_local_pressure}->{current_local_pressure}, remote {self.previous_remote_pressure}->{current_remote_pressure}")
+                self._update_streaming_based_on_state()
+                
+                # After updating, reset mic gains
+                self._set_mic_gains()
+                
+            # Update previous states for next comparison
+            self.previous_local_pressure = current_local_pressure
+            self.previous_remote_pressure = current_remote_pressure
     
     def _update_streaming_based_on_state(self) -> None:
         """Update streaming state with improved state transitions."""
@@ -495,7 +520,7 @@ class AudioStreamer:
                 
                 self.global_pipeline_active = should_global_be_active
 
-        self._reset_capture_volume()
+        self._set_mic_gains()
         
         # Update system state with audio info
         system_state.update_audio_state({
