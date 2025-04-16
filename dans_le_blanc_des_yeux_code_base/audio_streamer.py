@@ -328,36 +328,36 @@ class AudioStreamer:
                 print(f" → Cannot set personal mic gain: device not found")
             
             # Set global mic gain if found
-            # if self.global_mic_id:
-            #     # Convert PA ID to ALSA card number
-            #     global_alsa_card = get_alsa_card_for_pa_source(self.global_mic_id)
-            #     print(f"found global card: {global_alsa_card}")
-            #     
-            #     if global_alsa_card:
-            #         # Use amixer with card number and "Capture" control
-            #         cmd = ['amixer', '-c', global_alsa_card, 'cset',  "iface=MIXER,name='Mic Capture Volume'", f'{self.global_mic_gain}%']
-            #         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            #         
-            #         if result.returncode == 0:
-            #             print(f" → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}) gain to {self.global_mic_gain}%")
-            #         else:
-            #             print(f" → Failed to set global mic gain: {result.stderr}")
-            #     else:
-            #         print(f" → Cannot set global mic gain: couldn't get ALSA card number")
-            # else:
-            #     print(f" → Cannot set global mic gain: device not found")
+            if self.global_mic_id:
+                # Convert PA ID to ALSA card number
+                global_alsa_card = get_alsa_card_for_pa_source(self.global_mic_id)
+                print(f"found global card: {global_alsa_card}")
+                
+                if global_alsa_card:
+                    # Use amixer with card number and "Capture" control
+                    cmd = ['amixer', '-c', global_alsa_card, 'cset',  "iface=MIXER,name='Mic Capture Volume'", f'{self.global_mic_gain}%']
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    
+                    if result.returncode == 0:
+                        print(f" → Set global mic '{self.global_mic_name}' (ID:{self.global_mic_id}) gain to {self.global_mic_gain}%")
+                    else:
+                        print(f" → Failed to set global mic gain: {result.stderr}")
+                else:
+                    print(f" → Cannot set global mic gain: couldn't get ALSA card number")
+            else:
+                print(f" → Cannot set global mic gain: device not found")
 
 
             # Set Master mic gain
-            if self.master_mic_gain:
-                # Use amixer with card number and "Capture" control
-                cmd = ['amixer', 'sset', 'Capture', f'{self.master_mic_gain}%']
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-                if result.returncode == 0:
-                    print(f" → Set MASTER mic gain to {self.master_mic_gain}%")
-                else:
-                    print(f" → Failed to set MASTER mic gain: {result.stderr}")
+            # if self.master_mic_gain:
+            #     # Use amixer with card number and "Capture" control
+            #     cmd = ['amixer', 'sset', 'Capture', f'{self.master_mic_gain}%']
+            #     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            #
+            #     if result.returncode == 0:
+            #         print(f" → Set MASTER mic gain to {self.master_mic_gain}%")
+            #     else:
+            #         print(f" → Failed to set MASTER mic gain: {result.stderr}")
                 
         except Exception as e:
             print(f"Error setting microphone gain levels: {e}")
