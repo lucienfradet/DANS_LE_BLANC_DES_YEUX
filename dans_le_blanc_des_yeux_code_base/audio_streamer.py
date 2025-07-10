@@ -539,7 +539,7 @@ class AudioStreamer:
             return (
                 f'pulsesrc {device_param} buffer-time=10000 ! '
                 f'audio/x-raw, rate={RATE}, channels=1 ! '  # Explicitly set mono input
-                'webrtcdsp echo-cancellation=true noise-suppression=true ! '
+                'webrtcdsp ! '
                 'audioconvert ! '
                 'audioresample ! '
                 f'audio/x-raw, format=S16LE, channels=2, rate={RATE} ! '  # Convert to stereo
@@ -561,7 +561,7 @@ class AudioStreamer:
                 f'audio/x-raw, rate={RATE}, channels={CHANNELS} ! '
                 # 'audioconvert ! audioresample ! '
                 # 'audio/x-raw, format=S16LE, channels=2, rate=44100 ! '
-                'webrtcdsp echo-cancellation=true noise-suppression=true ! '
+                'webrtcdsp ! '
                 'audioconvert ! '
                 'audioresample ! '
                 'alawenc ! '
