@@ -217,6 +217,7 @@ class AudioPlayback:
                 "queue ! "  # Add queue after parse
                 "audioconvert ! "
                 f"audio/x-raw, format=S16LE, channels=2, rate={RATE} ! "
+                "webrtcechoprobe ! "  # ← ADD THIS LINE
                 f"audiopanorama name=panorama_{name} method=simple panorama=0.0 ! "
                 "queue ! "  # Add queue after panorama
                 "audioconvert ! "
